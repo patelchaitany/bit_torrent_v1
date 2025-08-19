@@ -92,14 +92,19 @@ def read_torrent(file_path):
             encoded_info = bencode(info_dict)
             hash_object = hashlib.sha1(encoded_info)
             hex_dig = hash_object.hexdigest()
+            piece_hex = decoded_data[b"info"][b"pieces"].hex()
+
         except KeyError:
             raise ValueError("The torrent file does not contain the 'info' key.")
         tracker_url = decoded_data[b"announce"].decode("utf-8")
-        file_length = decoded_data[b"info"][b"length"]
+        file_length_pice = decoded_data[b"info"][b'piece length']
+
+        file_length = decoded_data[b"info"][b'length']
         print(f"Tracker URL: {tracker_url}")
         print(f"Length: {file_length}")
-
         print(f"Info Hash: {hex_dig}")
+        print(f"Piece Length: {file_length_pice}")
+        print(f"Piece Hashes: \n{"\n".join([piece_hex[i:i+40] for i in range(0,len(piece_hex),40)])}")
     except (FileNotFoundError, ValueError) as e:
         print(f"Error reading or parsing the torrent file: {e}", file=sys.stderr)
         return None
