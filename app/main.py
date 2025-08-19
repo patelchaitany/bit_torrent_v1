@@ -1,42 +1,112 @@
 import json
 import sys
 
-# import bencodepy - available if you need it!
-# import requests - available if you need it!
+# import bencodepy #- available if you need it!
+import requests  # - available if you need it!
+
 
 # Examples:
 #
 # - decode_bencode(b"5:hello") -> b"hello"
 # - decode_bencode(b"10:hello12345") -> b"hello12345"
-def decode_bencode(bencoded_value):
-    if chr(bencoded_value[0]) == "i" and chr(bencoded_value[-1]) == "e":
-        return int(bencoded_value[1:-1])
-    if chr(bencoded_value[0]).isdigit():
-        first_colon_index = bencoded_value.find(b":")
-        if first_colon_index == -1:
-            raise ValueError("Invalid encoded value")
-        return bencoded_value[first_colon_index+1:]
-    else:
-        raise NotImplementedError("Only strings are supported at the moment")
+def decode_bencode(bencoded_value, index=0):
+    """Decode a bencoded value.
+    Args:
+        bencoded_value (bytes): The bencoded value to decode.
+        index (int): The starting index for decoding.
+    Returns:
+        The decoded value, which can be a string, integer, or list.
+    Raises:
+        ValueError: If the bencoded value is invalid.
+    """
 
-def decode_bencode_list(bencoded_value):
-    ans = []
-    if chr(bencoded_value[0]) == "l" and chr(bencoded_value[-1]) == "e":
-        i = 0 
-        while i <len(bencoded_value[1:-1]):
-            z = 0
-            if chr(bencoded_value[i]).isdigit():
-                first_colon_index = int(chr(bencoded_value[i]))
-                ans.append(decode_bencode(bencoded_value[i:i+first_colon_index+2]))
-                i = i+first_colon_index+1
-            elif chr(bencoded_value[i]) == "i":
-                while chr(bencoded_value[i + z]) != "e":
-                    z = z + 1                    
-                ans.append(decode_bencode(bencoded_value[i:i+z+1]))
-                i = i + z
-            i = i + 1
-    return ans
+    if bencoded_value[index : index + 1] == b"i":
+        # This is a bencoded integer, e.g., "i42e"
+        index += 1
+        end_index = bencoded_value.index(b"e", index)
+        integer_value = bencoded_value[index:end_index]
+        try:
+            return int(integer_value), end_index + 1
+        except ValueError:
+            raise ValueError("Invalid integer value in bencoded data")
+    elif bencoded_value[index : index + 1].isdigit():
+        # This is a bencoded string, e.g., "5:hello"
+        first_colon_index = bencoded_value.index(b":", index)
+        length = int(bencoded_value[index:first_colon_index])
+        start_index = first_colon_index + 1
+        end_index = start_index + length
+        if end_index > len(bencoded_value):
+            raise ValueError("Invalid bencoded string length")
+        return bencoded_value[start_index:end_index], end_index
+    elif bencoded_value[index : index + 1] == b"l":
+        # This is a bencoded list, e.g., "l5:hello5:worlde"
+        index += 1
+        result = []
+        while bencoded_value[index : index + 1] != b"e":
+            item, index = decode_bencode(bencoded_value, index)
+            result.append(item)
+
+        return result, index + 1
+        #
+
+        # if chr(bencoded_value[0]).isdigit():
+        #     first_colon_index = bencoded_value.find(b":")
+        #     if first_colon_index == -1:
+        #         raise ValueError("Invalid encoded value")
+        #     return bencoded_value[first_colon_index+1:]
+        # elif bencoded_value.startswith(b"i") and bencoded_value.endswith(b"e"):
+        #     # This is a bencoded integer, e.g., "i42e"
+        #     integer_value = bencoded_value[1:-1]
+        #     try:
+        #         return int(integer_value)
+        #     except ValueError:
+        #         raise ValueError("Invalid integer value in bencoded data")
+        # elif bencoded_value.startswith(b"l") and bencoded_value.endswith(b"e"):
+
+        # This is a bencoded list, e.g., "l5:hello5:worlde"
+        # print(bencoded_value[1:-1])
+        items = []
+        # We will decode each item in the list
+        # For simplicity, we assume that the items are strings or integers.
+        if len(bencoded_value) < 3:
+            return items  # Empty list case
+        # current_item = decode_bencode(bencoded_value[1:-1])
+        # if not isinstance(current_item, bytes):
+        # raise ValueError("Invalid bencoded list format")
+        # items.append(current_item)
+        current_item = b""
+        in_string = False
+        for byte in bencoded_value[1:-1]:
+            if byte == ord(b":"):
+                if not in_string:
+                    in_string = True
+                else:
+                    items.append(current_item)
+                    current_item = b""
+            elif byte == ord(b"i"):
+                if not in_string:
+                    in_string = True
+                else:
+                    raise ValueError("Invalid bencoded list format")
+            elif byte == ord(b"e"):
+                if in_string:
+                    items.append(current_item)
+                    current_item = b""
+                    in_string = False
+            else:
+                current_item += bytes([byte])
+        return items
+    else:
+        raise NotImplementedError("not implemented for this type of bencoded value")
+
+
 def main():
+
+    # print([[] , [] , []])
+    if len(sys.argv) < 1:
+        print("Usage: python main.py <command> [args]", file=sys.stderr)
+        sys.exit(1)
+
     command = sys.argv[1]
 
     # You can use print statements as follows for debugging, they'll be visible when running tests.
@@ -52,11 +122,11 @@ def main():
         def bytes_to_str(data):
             if isinstance(data, bytes):
                 return data.decode()
-
             raise TypeError(f"Type not serializable: {type(data)}")
 
         # Uncomment this block to pass the first stage
-        print(json.dumps(decode_bencode_list(bencoded_value), default=bytes_to_str))
+
+        print(json.dumps((decode_bencode(bencoded_value))[0], default=bytes_to_str))
     else:
         raise NotImplementedError(f"Unknown command {command}")
 
