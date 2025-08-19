@@ -37,7 +37,7 @@ def decode_bencode(bencoded_value, index=0):
         end_index = start_index + length
         if end_index > len(bencoded_value):
             raise ValueError("Invalid bencoded string length")
-        return str(bencoded_value[start_index:end_index],"utf-8"), end_index
+        return bencoded_value[start_index:end_index], end_index
     elif bencoded_value[index : index + 1] == b"l":
         # This is a bencoded list, e.g., "l5:hello5:worlde"
         index += 1
@@ -59,6 +59,25 @@ def decode_bencode(bencoded_value, index=0):
     else:
         raise NotImplementedError("not implemented for this type of bencoded value")
 
+
+def read_torrent(file_path):
+    try:
+        with open(file_path,"rb") as f:
+            data = f.read()
+        
+        decoded_data,_ = decode_bencode(data)
+        try:
+            # pass
+            info_dict = decoded_data[b"info"]
+        except KeyError:
+            raise ValueError("The torrent file does not contain the 'info' key.")
+        tracker_url = decoded_data[b"announce"].decode("utf-8")
+        file_length = decoded_data[b"info"][b"length"]
+        print(f"Tracker URL: {tracker_url}")
+        print(f"Length: {file_length}")
+    except (FileNotFoundError, ValueError) as e:
+        print(f"Error reading or parsing the torrent file: {e}", file=sys.stderr)
+        return None
 
 def main():
 
@@ -87,6 +106,13 @@ def main():
         # Uncomment this block to pass the first stage
 
         print(json.dumps((decode_bencode(bencoded_value))[0], default=bytes_to_str))
+    elif command == "info":
+        if len(sys.argv) < 3:
+            print("Usage: python main.py info <torrent_file_path>", file=sys.stderr)
+            sys.exit(1)
+        torrent_file_path = sys.argv[2]
+        read_torrent(torrent_file_path)
+        
     else:
         raise NotImplementedError(f"Unknown command {command}")
 
