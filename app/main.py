@@ -9,6 +9,25 @@ import requests  # - available if you need it!
 #
 # - decode_bencode(b"5:hello") -> b"hello"
 # - decode_bencode(b"10:hello12345") -> b"hello12345"
+def make_json_compatible(data):
+    """
+    Recursively converts bytes in a data structure to strings,
+    making it compatible for JSON serialization.
+    """
+    if isinstance(data, bytes):
+        # Decode bytes to a string. Use 'latin-1' for safety as it can handle any byte value.
+        return data.decode("latin-1")
+    elif isinstance(data, dict):
+        # Recursively process dictionary keys and values
+        return {
+            make_json_compatible(k): make_json_compatible(v) for k, v in data.items()
+        }
+    elif isinstance(data, list):
+        # Recursively process list items
+        return [make_json_compatible(item) for item in data]
+    else:
+        # Keep integers, floats, etc. as they are
+        return data
 def decode_bencode(bencoded_value, index=0):
     """Decode a bencoded value.
     Args:
@@ -105,7 +124,7 @@ def main():
 
         # Uncomment this block to pass the first stage
 
-        print(json.dumps((decode_bencode(bencoded_value))[0], default=bytes_to_str))
+        print(json.dumps(make_json_compatible((decode_bencode(bencoded_value))[0]), default=bytes_to_str))
     elif command == "info":
         if len(sys.argv) < 3:
             print("Usage: python main.py info <torrent_file_path>", file=sys.stderr)
