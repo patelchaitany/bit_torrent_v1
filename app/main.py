@@ -37,7 +37,7 @@ def decode_bencode(bencoded_value, index=0):
         end_index = start_index + length
         if end_index > len(bencoded_value):
             raise ValueError("Invalid bencoded string length")
-        return bencoded_value[start_index:end_index], end_index
+        return str(bencoded_value[start_index:end_index],"utf-8"), end_index
     elif bencoded_value[index : index + 1] == b"l":
         # This is a bencoded list, e.g., "l5:hello5:worlde"
         index += 1
@@ -47,55 +47,15 @@ def decode_bencode(bencoded_value, index=0):
             result.append(item)
 
         return result, index + 1
-        #
+    elif bencoded_value[index:index+1] == b"d":
+        index = index + 1
+        result = {}
+        while bencoded_value[index:index + 1] != b"e":
+            key,index = decode_bencode(bencoded_value,index)
+            value,index = decode_bencode(bencoded_value,index)
+            result[key] = value
 
-        # if chr(bencoded_value[0]).isdigit():
-        #     first_colon_index = bencoded_value.find(b":")
-        #     if first_colon_index == -1:
-        #         raise ValueError("Invalid encoded value")
-        #     return bencoded_value[first_colon_index+1:]
-        # elif bencoded_value.startswith(b"i") and bencoded_value.endswith(b"e"):
-        #     # This is a bencoded integer, e.g., "i42e"
-        #     integer_value = bencoded_value[1:-1]
-        #     try:
-        #         return int(integer_value)
-        #     except ValueError:
-        #         raise ValueError("Invalid integer value in bencoded data")
-        # elif bencoded_value.startswith(b"l") and bencoded_value.endswith(b"e"):
-
-        # This is a bencoded list, e.g., "l5:hello5:worlde"
-        # print(bencoded_value[1:-1])
-        items = []
-        # We will decode each item in the list
-        # For simplicity, we assume that the items are strings or integers.
-        if len(bencoded_value) < 3:
-            return items  # Empty list case
-        # current_item = decode_bencode(bencoded_value[1:-1])
-        # if not isinstance(current_item, bytes):
-        # raise ValueError("Invalid bencoded list format")
-        # items.append(current_item)
-        current_item = b""
-        in_string = False
-        for byte in bencoded_value[1:-1]:
-            if byte == ord(b":"):
-                if not in_string:
-                    in_string = True
-                else:
-                    items.append(current_item)
-                    current_item = b""
-            elif byte == ord(b"i"):
-                if not in_string:
-                    in_string = True
-                else:
-                    raise ValueError("Invalid bencoded list format")
-            elif byte == ord(b"e"):
-                if in_string:
-                    items.append(current_item)
-                    current_item = b""
-                    in_string = False
-            else:
-                current_item += bytes([byte])
-        return items
+        return result,index +1
     else:
         raise NotImplementedError("not implemented for this type of bencoded value")
 
