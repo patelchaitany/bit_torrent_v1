@@ -19,7 +19,23 @@ def decode_bencode(bencoded_value):
     else:
         raise NotImplementedError("Only strings are supported at the moment")
 
-
+def decode_bencode_list(bencoded_value):
+    ans = []
+    if chr(bencoded_value[0]) == "l" and chr(bencoded_value[-1]) == "e":
+        i = 0 
+        while i <len(bencoded_value[1:-1]):
+            z = 0
+            if chr(bencoded_value[i]).isdigit():
+                first_colon_index = int(chr(bencoded_value[i]))
+                ans.append(decode_bencode(bencoded_value[i:i+first_colon_index+2]))
+                i = i+first_colon_index+1
+            elif chr(bencoded_value[i]) == "i":
+                while chr(bencoded_value[i + z]) != "e":
+                    z = z + 1                    
+                ans.append(decode_bencode(bencoded_value[i:i+z+1]))
+                i = i + z
+            i = i + 1
+    return ans
 def main():
     command = sys.argv[1]
 
@@ -40,7 +56,7 @@ def main():
             raise TypeError(f"Type not serializable: {type(data)}")
 
         # Uncomment this block to pass the first stage
-        print(json.dumps(decode_bencode(bencoded_value), default=bytes_to_str))
+        print(json.dumps(decode_bencode_list(bencoded_value), default=bytes_to_str))
     else:
         raise NotImplementedError(f"Unknown command {command}")
 
