@@ -1,6 +1,7 @@
 import json
 import sys
-
+from typing import Dict, List
+import hashlib
 # import bencodepy #- available if you need it!
 import requests  # - available if you need it!
 
@@ -88,15 +89,50 @@ def read_torrent(file_path):
         try:
             # pass
             info_dict = decoded_data[b"info"]
+            encoded_info = bencode(info_dict)
+            hash_object = hashlib.sha1(encoded_info)
+            hex_dig = hash_object.hexdigest()
         except KeyError:
             raise ValueError("The torrent file does not contain the 'info' key.")
         tracker_url = decoded_data[b"announce"].decode("utf-8")
         file_length = decoded_data[b"info"][b"length"]
         print(f"Tracker URL: {tracker_url}")
         print(f"Length: {file_length}")
+
+        print(f"Info Hash: {hex_dig}")
     except (FileNotFoundError, ValueError) as e:
         print(f"Error reading or parsing the torrent file: {e}", file=sys.stderr)
         return None
+
+def bencode(bedecoded_value):
+    byte_enc = b""
+    if isinstance(bedecoded_value,Dict):
+        byte_enc = byte_enc + b"d"
+        for key in bedecoded_value:
+            key_enc = bencode(key)
+            val_enc = bencode(bedecoded_value[key])
+            byte_enc = byte_enc + key_enc + val_enc
+        byte_enc = byte_enc + b"e"
+
+    elif isinstance(bedecoded_value,List):
+        byte_enc = byte_enc + b"l"
+        for i in bedecoded_value:
+            enc_val = bencode(i)
+            byte_enc = byte_enc + enc_val
+        byte_enc = byte_enc + b"e"
+
+    elif isinstance(bedecoded_value,int):
+        byte_enc = byte_enc + b"i"
+        b = str(bedecoded_value)
+        byte_enc = byte_enc + b.encode() + b"e"
+    else:
+        size = len(bedecoded_value)
+        b = str(size)
+        byte_enc = byte_enc + b.encode() + b":" + bedecoded_value
+
+    return byte_enc
+
+
 
 def main():
 
