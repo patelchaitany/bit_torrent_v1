@@ -4,8 +4,10 @@ from typing import Dict, List
 import hashlib
 # import bencodepy #- available if you need it!
 import requests  # - available if you need it!
-
-
+import os
+import urllib.parse
+import socket
+import struct
 # Examples:
 #
 # - decode_bencode(b"5:hello") -> b"hello"
@@ -80,7 +82,7 @@ def decode_bencode(bencoded_value, index=0):
         raise NotImplementedError("not implemented for this type of bencoded value")
 
 
-def read_torrent(file_path):
+def read_torrent(file_path,print_flag = 1):
     try:
         with open(file_path,"rb") as f:
             data = f.read()
@@ -100,11 +102,13 @@ def read_torrent(file_path):
         file_length_pice = decoded_data[b"info"][b'piece length']
 
         file_length = decoded_data[b"info"][b'length']
-        print(f"Tracker URL: {tracker_url}")
-        print(f"Length: {file_length}")
-        print(f"Info Hash: {hex_dig}")
-        print(f"Piece Length: {file_length_pice}")
-        print(f"Piece Hashes: \n{"\n".join([piece_hex[i:i+40] for i in range(0,len(piece_hex),40)])}")
+        if print_flag:
+            print(f"Tracker URL: {tracker_url}")
+            print(f"Length: {file_length}")
+            print(f"Info Hash: {hex_dig}")
+            print(f"Piece Length: {file_length_pice}")
+            print(f"Piece Hashes: \n{"\n".join([piece_hex[i:i+40] for i in range(0,len(piece_hex),40)])}")
+        return decoded_data
     except (FileNotFoundError, ValueError) as e:
         print(f"Error reading or parsing the torrent file: {e}", file=sys.stderr)
         return None
@@ -137,8 +141,50 @@ def bencode(bedecoded_value):
 
     return byte_enc
 
+def peer_decoding(peer_bytes):
+    num_peers = len(peer_bytes)//6
+    ip_port = {}
+    for i in range(0,len(peer_bytes),6):
+        ip_byte = peer_bytes[i:i+4]
+        port_byte = peer_bytes[i+4:i+6]
 
+        ip_addr = socket.inet_ntoa(ip_byte)
+        port = int.from_bytes(port_byte,"big")
 
+        ip_port[ip_addr] = port
+
+    return ip_port
+def discover_peer(bedecoded_value):
+    info = bedecoded_value[b'info']
+    url = str(bedecoded_value[b'announce'],encoding="latin-1")
+    encoded_info = bencode(info)
+    hash_obj = hashlib.sha1(encoded_info)
+    info_hash = hash_obj.digest()
+    uploaded = 0
+    downloaded = 0
+    port = 6881
+    left = int(bedecoded_value[b'info'][b'length'])
+    compact = 1
+    
+    peer_id = os.urandom(10)
+    peer_id = peer_id.hex()
+    params = {
+        "info_hash":info_hash,
+        "peer_id":peer_id,
+        "port":port,
+        "uploaded":uploaded,
+        "downloaded":downloaded,
+        "left":left,
+        "compact":compact
+    }
+    try:
+        response = requests.get(url = url,params= params)
+        decoded_responce,_ = decode_bencode(response.content)
+        port_ip = peer_decoding(decoded_responce[b'peers']) 
+        for i in port_ip:
+            print(f"{i}:{port_ip[i]}")
+    except Exception as e:
+        raise ValueError(f"{e}")
 def main():
 
     # print([[] , [] , []])
@@ -173,8 +219,17 @@ def main():
         torrent_file_path = sys.argv[2]
         read_torrent(torrent_file_path)
         
+    elif command == "peers":
+        if len(sys.argv) < 3:
+            print("Usage: python main.py info <torrent_file_path>", file=sys.stderr)
+            sys.exit(1)
+        torrent_file_path = sys.argv[2]
+
+        decode_data = read_torrent(torrent_file_path,print_flag=0)
+        discover_peer(decode_data)
     else:
         raise NotImplementedError(f"Unknown command {command}")
+
 
 
 if __name__ == "__main__":
