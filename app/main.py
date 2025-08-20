@@ -1,5 +1,6 @@
 import json
 import sys
+from types import resolve_bases
 from typing import Dict, List, _type_repr
 import hashlib
 # import bencodepy #- available if you need it!
@@ -8,6 +9,7 @@ import os
 import urllib.parse
 import socket
 import struct
+import math
 # Examples:
 #
 # - decode_bencode(b"5:hello") -> b"hello"
@@ -207,22 +209,169 @@ def decode_torrent_protocol(data):
 
     return decode_info
     
+# This function read the current responce and acording it return the next message pay load and also set the step in which we are
+def payload_create(request_info,message_return,stage = 0):
+    payload_next = b''
+    if stage == 0:
+        payload_next = b'\x00\x00\x00\01'
+        payload_next = payload_next + b'\x02'
+        message_return['payload'] = payload_next
+    elif stage == 1:
+        #now send requested message
+        index = request_info['index'].to_bytes(4,"big")
+        begin = request_info['begin'].to_bytes(4,"big")
+        length = request_info['length'].to_bytes(4,"big")
+        payload_next = b'\x00\x00\x00\x0D\x06' + index + begin + length
+        message_return['payload'] = payload_next
+    return message_return
+def read_message(message,request_info,stage = 0):
+    message_legth = int.from_bytes(message[0:4],byteorder="big")
+    message_type = int.from_bytes(message[4:5])
+    payload = message[5:]
 
+    print(f"message type {message_type} {len(payload)}")
 
-def peer_tcp(socket_info):
+    message_return = {
+        "stop":0,
+        "downloaded_idx":None,
+        "have_pices":None,
+        "have_idx":None,
+        "data":None,
+        "begin_index":None,
+        "payload":None,
+        "piece_index":None
+    }
+    #choke
+    if message_type == 0:
+        message_return["stop"] = 1
+    elif message_type == 1:
+        message_return["stop"] = 0
+    elif message_type == 5:
+        message_return["have_pices"] = payload
+    elif message_type == 4:
+        message_return['have_idx'] = payload
+    elif message_type == 7:
+        piece_index =int.from_bytes(payload[0:4],byteorder="big")
+        begin_index = payload[4:8]
+        block_data = payload[8:]
+        print(f"block_data {len(block_data)} {len(begin_index)} {len(begin_index)}")
+        message_return['data'] = block_data
+        message_return['begin_index'] = begin_index
+        message_return['piece_index'] = piece_index
+    #Now send Intrested message
+
+    return message_return
+
+def get_msb_index(bitfield):
+    for byte_index, byte in enumerate(bitfield):
+        for bit_index in range(8):
+            if byte & (1 << (7 - bit_index)):  # check MSB first
+                piece_index = byte_index * 8 + bit_index
+                return 1, piece_index
+    return 0, None  # no bits set
+
+def set_piece(bitfield, piece_index,value = 1):
+    byte_index = piece_index // 8
+    bit_index = piece_index % 8
+    mask = 1 << (7 - bit_index)  # MSB-first convention in BitTorrent
+
+    if value:
+        bitfield[byte_index] |= mask
+    else:
+        bitfield[byte_index] &= ~mask
+
+def recv(s):
+    length = s.recv(4)
+    while not length or not int.from_bytes(length):
+        length = s.recv(4)
+    message = s.recv(int.from_bytes(length))
+
+    while len(message)<int.from_bytes(length):
+        message = message + s.recv(int.from_bytes(length) - len(message))
+    
+    return length + message
+
+def peer_tcp(socket_info,decode_data):
+    
     info_hash = socket_info["info_hash"]
     peer_id = socket_info["peer_id"]
     host = socket_info["host"]
     port = socket_info["port"]
-    client_socket = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-    client_socket.connect((host,port))
+    print(decode_data)
+    num_pieces = math.ceil(len(decode_data[b'info'][b'pieces'])/20)
+    # This is the handshake Protocol
     protocol = b"\x13" + b"BitTorrent protocol" + 8*b"\x00"
     protocol = protocol + info_hash
     protocol = protocol + peer_id
-    client_socket.sendall(protocol)
-    resp = client_socket.recv(1024)
-    peer_info = decode_torrent_protocol(resp)
-    print(f"Peer ID: {peer_info['peer_id'].hex()}")
+    have_pieces = bytearray(math.ceil(num_pieces / 8))  # bytearray of zeros
+
+    request_info = {
+        "begin" : 0,
+        "length" : 0,
+        "index" : 0
+    }
+    with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as client_socket:
+        client_socket.connect((host,port))
+        client_socket.sendall(protocol)
+        resp = client_socket.recv(68)
+
+        peer_info = decode_torrent_protocol(resp)
+        piece_length = decode_data[b'info'][b'piece length']
+        total_length_file = decode_data[b'info'][b'length']
+
+        bitfield_message = recv(client_socket)
+        print(bitfield_message)
+        next_message = read_message(bitfield_message,request_info,stage=0)
+        next_message = payload_create(request_info,next_message,stage=0)
+        print(next_message)
+
+        have_pieces = bytearray(next_message['have_pices'])
+        print(have_pieces)
+        step = 1
+
+        for i in range(num_pieces):
+            flag,index = get_msb_index(have_pieces)
+            if not flag:
+                break
+            request_info["length"] = min(int.from_bytes(b'\x40\x00'),piece_length)
+            request_info['index'] = index
+
+            total_length = piece_length
+            if index == num_pieces -1:
+                total_length = total_length_file%total_length
+            set_piece(have_pieces,index,value=0)
+            request_info['begin'] = 0
+            if next_message['payload'] is None:
+                next_message = payload_create(request_info,next_message,stage=1)
+            while True:
+                print(30*"-")
+                print(30*f"{index}")
+                print(f"next payload {next_message['payload']} {total_length} {request_info['begin']}")
+                client_socket.send(next_message['payload'])
+                new_message = recv(client_socket)
+                next_message = read_message(new_message,request_info,stage=step)
+                if next_message['stop'] == 1:
+                    break
+                if next_message['have_idx']:
+                    set_piece(have_pieces,int.from_bytes(next_message['have_idx'],byteorder="big"))
+                if next_message['begin_index']:
+                    begin_index = int.from_bytes(next_message['begin_index'],byteorder="big")
+                    print(f"begin_index : {begin_index}") 
+                if next_message['data']:
+                    print(f"{len(next_message['data'])} int {int.from_bytes(b'\x40\x00',byteorder="big")}")
+                    request_info['begin'] = request_info['begin']+len(next_message['data'])
+                    total_length = total_length - len(next_message['data'])
+                    if total_length > 0 and total_length < int.from_bytes(b'\x40\x00',byteorder="big"):
+                        request_info['length'] = total_length
+                    elif total_length<=0:
+                        break
+                    elif total_length>0:
+                        request_info['length'] = int.from_bytes(b'\x40\x00',byteorder="big")
+                next_message = payload_create(request_info,next_message,stage=step)
+                print(30*"-")
+                print(30*" ")
+             
+            print(f"one Message is sent succces fully")
 def main():
 
     # print([[] , [] , []])
@@ -277,7 +426,7 @@ def main():
         socket_info["host"] = ip_addr
         socket_info["peer_id"] = decode_data[b'peer_id']
         socket_info["info_hash"] = info_hash
-        peer_tcp(socket_info)
+        peer_tcp(socket_info,decode_data)
     else:
         raise NotImplementedError(f"Unknown command {command}")
 
