@@ -1,6 +1,6 @@
 import json
 import sys
-from typing import Dict, List
+from typing import Dict, List, _type_repr
 import hashlib
 # import bencodepy #- available if you need it!
 import requests  # - available if you need it!
@@ -84,10 +84,12 @@ def decode_bencode(bencoded_value, index=0):
 
 def read_torrent(file_path,print_flag = 1):
     try:
+        peer_id = os.urandom(20)
         with open(file_path,"rb") as f:
             data = f.read()
         
         decoded_data,_ = decode_bencode(data)
+        decoded_data[b'peer_id'] = peer_id
         try:
             # pass
             info_dict = decoded_data[b"info"]
@@ -154,26 +156,28 @@ def peer_decoding(peer_bytes):
         ip_port[ip_addr] = port
 
     return ip_port
-def discover_peer(bedecoded_value):
-    info = bedecoded_value[b'info']
-    url = str(bedecoded_value[b'announce'],encoding="latin-1")
+def get_info_hash(info):
     encoded_info = bencode(info)
     hash_obj = hashlib.sha1(encoded_info)
     info_hash = hash_obj.digest()
+    return info_hash
+def discover_peer(bedecoded_value):
+    info = bedecoded_value[b'info']
+    url = str(bedecoded_value[b'announce'],encoding="latin-1")
+    info_hash = get_info_hash(info)
     uploaded = 0
     downloaded = 0
     port = 6881
     left = int(bedecoded_value[b'info'][b'length'])
     compact = 1
     
-    peer_id = os.urandom(10)
-    peer_id = peer_id.hex()
+    peer_id = bedecoded_value[b'peer_id']
     params = {
         "info_hash":info_hash,
         "peer_id":peer_id,
         "port":port,
         "uploaded":uploaded,
-        "downloaded":downloaded,
+"downloaded":downloaded,
         "left":left,
         "compact":compact
     }
@@ -185,6 +189,40 @@ def discover_peer(bedecoded_value):
             print(f"{i}:{port_ip[i]}")
     except Exception as e:
         raise ValueError(f"{e}")
+
+def decode_torrent_protocol(data):
+    length = int.from_bytes(data[0:1])
+    bit_string = str(data[1:20],encoding="latin-1")
+    function_byte = data[20:28]
+    info_hash = data[28:48]
+    peer_id = data[48:68]
+    
+    decode_info = {}
+    decode_info["length"] = length
+    decode_info["bit_string"] = bit_string
+    decode_info["function_byte"] = function_byte
+    decode_info["info_hash"] = info_hash
+    decode_info["peer_id"] = peer_id
+   
+
+    return decode_info
+    
+
+
+def peer_tcp(socket_info):
+    info_hash = socket_info["info_hash"]
+    peer_id = socket_info["peer_id"]
+    host = socket_info["host"]
+    port = socket_info["port"]
+    client_socket = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+    client_socket.connect((host,port))
+    protocol = b"\x13" + b"BitTorrent protocol" + 8*b"\x00"
+    protocol = protocol + info_hash
+    protocol = protocol + peer_id
+    client_socket.sendall(protocol)
+    resp = client_socket.recv(1024)
+    peer_info = decode_torrent_protocol(resp)
+    print(f"Peer ID: {peer_info['peer_id'].hex()}")
 def main():
 
     # print([[] , [] , []])
@@ -227,6 +265,19 @@ def main():
 
         decode_data = read_torrent(torrent_file_path,print_flag=0)
         discover_peer(decode_data)
+    elif command == "handshake":
+        torrent_file_path = sys.argv[2]
+        ip_port = sys.argv[3]
+        ip_addr,port = ip_port.split(":")
+        decode_data = read_torrent(torrent_file_path,print_flag=0)
+        info_hash = get_info_hash(decode_data[b'info'])
+        port = int(port)
+        socket_info = {}
+        socket_info["port"] = port
+        socket_info["host"] = ip_addr
+        socket_info["peer_id"] = decode_data[b'peer_id']
+        socket_info["info_hash"] = info_hash
+        peer_tcp(socket_info)
     else:
         raise NotImplementedError(f"Unknown command {command}")
 
