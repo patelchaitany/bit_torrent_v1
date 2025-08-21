@@ -299,7 +299,7 @@ def recv(s):
     
     return length + message
 
-def peer_tcp(socket_info,decode_data,print_flag = 1):
+def peer_tcp(socket_info,decode_data,print_flag = 1,download = 0):
     
     info_hash = socket_info["info_hash"]
     peer_id = socket_info["peer_id"]
@@ -331,17 +331,22 @@ def peer_tcp(socket_info,decode_data,print_flag = 1):
         total_length_file = decode_data[b'info'][b'length']
 
         bitfield_message = recv(client_socket)
+        print(f"bit filed {bitfield_message}")
         next_message = read_message(bitfield_message,request_info,stage=0)
         next_message = payload_create(request_info,next_message,stage=0)
 
         have_pieces = bytearray(next_message['have_pices'])
         step = 1
         pices_hash = {}
+
+        if download == 0:
+            return pices_hash,have_pieces
         for i in range(num_pieces):
             xor_result = bytearray(a ^ b for a, b in zip(have_pieces, current_have))
             have_pieces = bytearray(a & b for a, b in zip(have_pieces, xor_result))
             flag,index = get_msb_index(have_pieces)
-
+            if request_info["requested_index"]:
+                index = request_info["requested_index"]
             if not flag or index is None:
                 break
             request_info["length"] = min(int.from_bytes(b'\x40\x00'),piece_length)
@@ -359,6 +364,7 @@ def peer_tcp(socket_info,decode_data,print_flag = 1):
             while True:
                 client_socket.send(next_message['payload'])
                 new_message = recv(client_socket)
+                print(f"from while {new_message}")
                 next_message = read_message(new_message,request_info,stage=step)
                 if next_message['stop'] == 1:
                     break
@@ -382,6 +388,8 @@ def peer_tcp(socket_info,decode_data,print_flag = 1):
                 next_message = payload_create(request_info,next_message,stage=step)
             
             if hash_comp(pices_hash[index],decode_data[b'info'][b'pieces'][(20*index):20*(index + 1)]) == 0:
+                break
+            if request_info['requested_index']:
                 break
 
     return pices_hash,have_pieces 
@@ -446,10 +454,12 @@ def main():
             output_file = sys.argv[3]
         torrent_file_path = sys.argv[4]
         index = int(sys.argv[5])
-        decode_data = read_torrent(torrent_file_path,print_flag=0)
-        peer_info = discover_peer(decode_data,flag=0)
+        decode_data = read_torrent(torrent_file_path)
+        peer_info = discover_peer(decode_data)
         info_hash = get_info_hash(decode_data[b'info'])
+        print(f"Info Hash {info_hash}")
         socket_info = {}
+        socket_info['requested_index'] = None
         pices_data = None
         have_pices = None
         for i in peer_info:
@@ -457,7 +467,8 @@ def main():
             socket_info["host"] = i
             socket_info["peer_id"] = decode_data[b'peer_id']
             socket_info['info_hash'] = info_hash
-            pices_data,have_pices = peer_tcp(socket_info,decode_data,print_flag= 0)
+            socket_info["requested_index"] = index
+            pices_data,have_pices = peer_tcp(socket_info,decode_data,download=1)
             break
 
         with open(output_file,'wb') as f:
