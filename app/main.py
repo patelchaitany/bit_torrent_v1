@@ -446,8 +446,8 @@ def main():
             output_file = sys.argv[3]
         torrent_file_path = sys.argv[4]
         index = int(sys.argv[5])
-        decode_data = read_torrent(torrent_file_path,print_flag=0)
-        peer_info = discover_peer(decode_data,flag=0)
+        decode_data = read_torrent(torrent_file_path)
+        peer_info = discover_peer(decode_data)
         info_hash = get_info_hash(decode_data[b'info'])
         socket_info = {}
         pices_data = None
@@ -457,7 +457,7 @@ def main():
             socket_info["host"] = i
             socket_info["peer_id"] = decode_data[b'peer_id']
             socket_info['info_hash'] = info_hash
-            pices_data,have_pices = peer_tcp(socket_info,decode_data,print_flag= 0)
+            pices_data,have_pices = peer_tcp(socket_info,decode_data)
             break
 
         with open(output_file,'wb') as f:
