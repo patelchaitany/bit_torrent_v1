@@ -299,8 +299,13 @@ def recv(s):
     
     return length + message
 
-def peer_tcp(socket_info,decode_data,print_flag = 1,download = 0):
+def download_whole_file(peer_info,decode_data,print_flag = 1,download = 0):
     
+    def download_piece(socke_info,print_flag,download = 0):
+        
+    
+
+def peer_tcp(socket_info,decode_data,print_flag = 1,download = 0):
     info_hash = socket_info["info_hash"]
     peer_id = socket_info["peer_id"]
     host = socket_info["host"]
@@ -395,7 +400,8 @@ def peer_tcp(socket_info,decode_data,print_flag = 1,download = 0):
             if socket_info['requested_index']:
                 break
 
-    return pices_hash,have_pieces 
+    return pices_hash,have_pieces
+
 def main():
 
     # print([[] , [] , []])
@@ -451,6 +457,33 @@ def main():
         socket_info["peer_id"] = decode_data[b'peer_id']
         socket_info["info_hash"] = info_hash
         peer_tcp(socket_info,decode_data)
+    elif command == "download_piece":
+        output_file = ""
+        if sys.argv[2] == "-o":
+            output_file = sys.argv[3]
+        torrent_file_path = sys.argv[4]
+        index = int(sys.argv[5])
+        decode_data = read_torrent(torrent_file_path,print_flag=0)
+        peer_info = discover_peer(decode_data,flag=0)
+        info_hash = get_info_hash(decode_data[b'info'])
+        #print(f"Info Hash {info_hash}")
+        socket_info = {}
+        socket_info['requested_index'] = None
+        pices_data = None
+        have_pices = None
+        for i in peer_info:
+            socket_info["port"] = peer_info[i]
+            socket_info["host"] = i
+            socket_info["peer_id"] = decode_data[b'peer_id']
+            socket_info['info_hash'] = info_hash
+            socket_info["requested_index"] = index
+            pices_data,have_pices = peer_tcp(socket_info,decode_data,download=1,print_flag=0)
+            break
+
+        with open(output_file,'wb') as f:
+            if pices_data[index]:
+                f.write(pices_data[index])
+
     elif command == "download_piece":
         output_file = ""
         if sys.argv[2] == "-o":
