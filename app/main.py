@@ -338,7 +338,7 @@ async def perform_handshke(writer,socket_info,handshake_type = 0):
     peer_id = socket_info["peer_id"]
     protocol_bit = 8*b"\x00"
     if handshake_type == 1:
-        protocol_bit = 5*b"\x00" + b"\x01" + 2*b"\x00"
+        protocol_bit = 5*b"\x00" + b"\x10" + 2*b"\x00"
     protocol = b"\x13" + b"BitTorrent protocol" + protocol_bit + info_hash + peer_id
 
     writer.write(protocol)
@@ -448,7 +448,7 @@ async def download_whole_file_async(peer_info, decode_data, timeout=60):
             socket_info["host"] = j
             socket_info["peer_id"] = decode_data[b'peer_id']
             socket_info['info_hash'] = info_hash
-            result = await peer_tcp_async(socket_info,decode_data,print_flag=0,download=1)
+            result = await peer_tcp_async(socket_info,decode_data,print_flag=1,download=1)
             data_buffer[i] = result[i]
             break
     return data_buffer
