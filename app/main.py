@@ -1,6 +1,7 @@
 import json
+import re
 import sys
-from types import resolve_bases
+import asyncio
 from typing import Dict, List, _type_repr
 import hashlib
 # import bencodepy #- available if you need it!
@@ -8,8 +9,8 @@ import requests  # - available if you need it!
 import os
 import urllib.parse
 import socket
-import struct
 import math
+from collections import defaultdict
 # Examples:
 #
 # - decode_bencode(b"5:hello") -> b"hello"
@@ -239,7 +240,6 @@ def read_message(message,request_info,stage = 0):
     message_type = int.from_bytes(message[4:5])
     payload = message[5:]
 
-
     message_return = {
         "stop":0,
         "downloaded_idx":None,
@@ -248,7 +248,8 @@ def read_message(message,request_info,stage = 0):
         "data":None,
         "begin_index":None,
         "payload":None,
-        "piece_index":None
+        "piece_index":None,
+        "message_type":message_type
     }
     #choke
     if message_type == 0:
@@ -288,6 +289,10 @@ def set_piece(bitfield, piece_index,value = 1):
     else:
         bitfield[byte_index] &= ~mask
 
+def is_bit_set(bytearray_data, bit_index):
+    byte_index = bit_index // 8
+    bit_position = bit_index % 8
+    return (bytearray_data[byte_index] & (1 << (7 - bit_position))) != 0
 def recv(s):
     length = s.recv(4)
     while not length or not int.from_bytes(length):
@@ -299,108 +304,138 @@ def recv(s):
     
     return length + message
 
-def download_whole_file(peer_info,decode_data,print_flag = 1,download = 0):
+async def recv_async(reader):
+    # Read 4-byte length prefix
+    length_bytes = await reader.read(4)
+    while len(length_bytes) < 4:
+        more = await reader.read(4 - len(length_bytes))
+        length_bytes += more
     
-    def download_piece(socke_info,print_flag,download = 0):
-        
-    
+    if len(length_bytes) < 4:
+        raise ConnectionError("Connection closed before receiving length")
+    length = int.from_bytes(length_bytes, byteorder='big')
 
-def peer_tcp(socket_info,decode_data,print_flag = 1,download = 0):
+    # Read the message payload
+    message = b""
+    while len(message) < length:
+        chunk = await reader.read(length - len(message))
+        message += chunk
+    if len(message)<length:
+        raise ConnectionError("Connection closed before receiving length")
+    return length_bytes + message
+
+async def peer_tcp_async(socket_info, decode_data, print_flag=1, download=0):
+    num_pieces = math.ceil(len(decode_data[b'info'][b'pieces']) / 20)
     info_hash = socket_info["info_hash"]
     peer_id = socket_info["peer_id"]
     host = socket_info["host"]
     port = socket_info["port"]
-    num_pieces = math.ceil(len(decode_data[b'info'][b'pieces'])/20)
-    # This is the handshake Protocol
-    protocol = b"\x13" + b"BitTorrent protocol" + 8*b"\x00"
-    protocol = protocol + info_hash
-    protocol = protocol + peer_id
-    have_pieces = bytearray(math.ceil(num_pieces / 8))  # bytearray of zeros
+    index = socket_info.get('requested_index', None)
 
-    request_info = {
-        "begin" : 0,
-        "length" : 0,
-        "index" : 0
-    }
+    protocol = b"\x13" + b"BitTorrent protocol" + 8*b"\x00" + info_hash + peer_id
+    have_pieces = bytearray(math.ceil(num_pieces / 8))
 
-    current_have = bytearray(num_pieces*b'\x00')
-    with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as client_socket:
-        client_socket.connect((host,port))
-        client_socket.sendall(protocol)
-        resp = client_socket.recv(68)
+    request_info = {"begin": 0, "length": 0, "index": 0}
+    pices_hash = {}
 
+    try:
+        reader, writer = await asyncio.open_connection(host, port)
+        writer.write(protocol)
+        await writer.drain()
+        resp = await reader.read(68)
         peer_info = decode_torrent_protocol(resp)
-
-        pices_hash = {}
         if print_flag == 1:
             print(f"Peer ID: {peer_info['peer_id'].hex()}")
 
         if download == 0:
-            return pices_hash,current_have
+            writer.close()
+            await writer.wait_closed()
+            return pices_hash
+
         piece_length = decode_data[b'info'][b'piece length']
         total_length_file = decode_data[b'info'][b'length']
 
-        bitfield_message = recv(client_socket)
-        #print(f"bit filed {bitfield_message}")
-        next_message = read_message(bitfield_message,request_info,stage=0)
-        next_message = payload_create(request_info,next_message,stage=0)
+        # Receive bitfield
+        bitfield_message = await recv_async(reader)
 
+        #print(f"Bit Field {bitfield_message}")
+
+        next_message = read_message(bitfield_message, request_info, stage=0)
+        next_message = payload_create(request_info, next_message, stage=0)
+        
+        #print(f"\n {index} from outside {host} : {port} message type : {next_message['message_type']} \n")
         have_pieces = bytearray(next_message['have_pices'])
-        step = 1
-        pices_hash = {}
 
-        for i in range(num_pieces):
-            xor_result = bytearray(a ^ b for a, b in zip(have_pieces, current_have))
-            have_pieces = bytearray(a & b for a, b in zip(have_pieces, xor_result))
-            flag,index = get_msb_index(have_pieces)
-            if socket_info["requested_index"]:
-                index = socket_info["requested_index"]
-            if not flag or index is None:
-                break
-            request_info["length"] = min(int.from_bytes(b'\x40\x00'),piece_length)
-            request_info['index'] = index
-            
+        if not is_bit_set(have_pieces, bit_index=index):
+            writer.close()
+            await writer.wait_closed()
+            return None  # Peer does not have the requested piece
+
+        # Set request length
+        request_info["length"] = min(16*1024, piece_length)  # 16KB blocks
+        request_info['index'] = index
+        request_info['begin'] = 0
+
+        if index == num_pieces - 1:
+            total_length = total_length_file % piece_length
+        else:
             total_length = piece_length
-            if index == num_pieces -1:
-                total_length = total_length_file%total_length
-            set_piece(have_pieces,index,value=0)
-            set_piece(current_have,index)
-            request_info['begin'] = 0
-            if next_message['payload'] is None:
-                next_message = payload_create(request_info,next_message,stage=1)
 
-            while True:
-                client_socket.send(next_message['payload'])
-                new_message = recv(client_socket)
-                #print(f"from while {new_message}")
-                next_message = read_message(new_message,request_info,stage=step)
-                if next_message['stop'] == 1:
-                    break
-                if next_message['have_idx']:
-                    set_piece(have_pieces,int.from_bytes(next_message['have_idx'],byteorder="big"))
-                if next_message['begin_index']:
-                    begin_index = int.from_bytes(next_message['begin_index'],byteorder="big")
-                if next_message['data']:
-                    if index in pices_hash:
-                        pices_hash[index] = pices_hash[index] + next_message['data']
-                    else:
-                        pices_hash[index] = next_message['data']
-                    request_info['begin'] = request_info['begin']+len(next_message['data'])
-                    total_length = total_length - len(next_message['data'])
-                    if total_length > 0 and total_length < int.from_bytes(b'\x40\x00',byteorder="big"):
-                        request_info['length'] = total_length
-                    elif total_length<=0:
-                        break
-                    elif total_length>0:
-                        request_info['length'] = int.from_bytes(b'\x40\x00',byteorder="big")
-                next_message = payload_create(request_info,next_message,stage=step)
+        while total_length > 0:
+            writer.write(next_message['payload'])
+            await writer.drain()
+        
+            new_message = await recv_async(reader)
+            next_message = read_message(new_message, request_info, stage=1)
+            #print(f"\n {index} {30*"-"} \n from while {host} : {port} \n message type : {next_message['message_type']} \n {30*"-"}\n")
+            if next_message['stop']:
+                break
+
+            if next_message['have_idx']:
+                set_piece(have_pieces, int.from_bytes(next_message['have_idx'], byteorder="big"))
+
+            if next_message['data']:
+                data = next_message['data']
+                if index in pices_hash:
+                    pices_hash[index] += data
+                else:
+                    pices_hash[index] = data
+
+                request_info['begin'] += len(data)
+                total_length -= len(data)
+                request_info['length'] = min(16*1024, total_length)
             
-            if hash_comp(pices_hash[index],decode_data[b'info'][b'pieces'][(20*index):20*(index + 1)]) == 0:
-                break
-            if socket_info['requested_index']:
-                break
+            next_message = payload_create(request_info, next_message, stage=1)
+        writer.close()
+        await writer.wait_closed()
 
-    return pices_hash,have_pieces
+        # Verify hash
+        if hash_comp(pices_hash[index], decode_data[b'info'][b'pieces'][20*index:20*(index+1)]) == 0:
+            return None
+        return pices_hash
+
+    except Exception as e:
+        #print(f"{index} Error connecting to {host}:{port} -> {e}")
+        return None
+
+async def download_whole_file_async(peer_info, decode_data, timeout=60):
+    num_pieces = math.ceil(len(decode_data[b'info'][b'pieces']) / 20)
+    info_hash = get_info_hash(decode_data[b'info'])
+    current_have = bytearray(num_pieces * b'\x00')
+    data_buffer = {}
+    socket_info = {}
+    for i in range(num_pieces):
+        socket_info['requested_index'] = i
+
+        for j in peer_info:
+            socket_info["port"] = peer_info[j]
+            socket_info["host"] = j
+            socket_info["peer_id"] = decode_data[b'peer_id']
+            socket_info['info_hash'] = info_hash
+            result = await peer_tcp_async(socket_info,decode_data,print_flag=0,download=1)
+            data_buffer[i] = result[i]
+            break
+    return data_buffer
 
 def main():
 
@@ -456,7 +491,7 @@ def main():
         socket_info["host"] = ip_addr
         socket_info["peer_id"] = decode_data[b'peer_id']
         socket_info["info_hash"] = info_hash
-        peer_tcp(socket_info,decode_data)
+        asyncio.run(peer_tcp_async(socket_info,decode_data))
     elif command == "download_piece":
         output_file = ""
         if sys.argv[2] == "-o":
@@ -477,39 +512,27 @@ def main():
             socket_info["peer_id"] = decode_data[b'peer_id']
             socket_info['info_hash'] = info_hash
             socket_info["requested_index"] = index
-            pices_data,have_pices = peer_tcp(socket_info,decode_data,download=1,print_flag=0)
+            #print(f"socket Info \n {socket_info}")
+            pices_data = asyncio.run(peer_tcp_async(socket_info,decode_data,download=1,print_flag=0))
             break
-
-        with open(output_file,'wb') as f:
-            if pices_data[index]:
-                f.write(pices_data[index])
-
-    elif command == "download_piece":
+        #print(f"piece info {pices_data}")
+        if pices_data:
+            with open(output_file,'wb') as f:
+                if pices_data[index]:
+                    f.write(pices_data[index])
+    elif command == "download":
         output_file = ""
         if sys.argv[2] == "-o":
             output_file = sys.argv[3]
         torrent_file_path = sys.argv[4]
-        index = int(sys.argv[5])
         decode_data = read_torrent(torrent_file_path,print_flag=0)
         peer_info = discover_peer(decode_data,flag=0)
-        info_hash = get_info_hash(decode_data[b'info'])
-        #print(f"Info Hash {info_hash}")
-        socket_info = {}
-        socket_info['requested_index'] = None
-        pices_data = None
-        have_pices = None
-        for i in peer_info:
-            socket_info["port"] = peer_info[i]
-            socket_info["host"] = i
-            socket_info["peer_id"] = decode_data[b'peer_id']
-            socket_info['info_hash'] = info_hash
-            socket_info["requested_index"] = index
-            pices_data,have_pices = peer_tcp(socket_info,decode_data,download=1,print_flag=0)
-            break
+        result = asyncio.run(download_whole_file_async(peer_info,decode_data))
 
-        with open(output_file,'wb') as f:
-            if pices_data[index]:
-                f.write(pices_data[index])
+        if result:
+            with open(output_file,'wb') as f:
+                for i in result:
+                    f.write(result[i])
     else: 
         raise NotImplementedError(f"Unknown command {command}")
 
