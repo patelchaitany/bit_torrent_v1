@@ -11,6 +11,7 @@ import urllib.parse
 import socket
 import math
 from collections import defaultdict
+import urllib.parse
 # Examples:
 #
 # - decode_bencode(b"5:hello") -> b"hello"
@@ -437,6 +438,12 @@ async def download_whole_file_async(peer_info, decode_data, timeout=60):
             break
     return data_buffer
 
+def parse_magnet_link(magnet_link):
+    info_hash_location = magnet_link.find("btih:") + 5
+    info_hash = magnet_link[info_hash_location : info_hash_location + 40]
+    url_location = magnet_link.find("tr=") + 3
+    url = magnet_link[url_location:]
+    return info_hash,url
 def main():
 
     # print([[] , [] , []])
@@ -533,6 +540,11 @@ def main():
             with open(output_file,'wb') as f:
                 for i in result:
                     f.write(result[i])
+    elif command == "magnet_parse":
+        magnet_link = sys.argv[2]
+        info_hash,url = parse_magnet_link(magnet_link)
+        print(f"Tracker URL: {urllib.parse.unquote(url)}")
+        print(f"Info Hash: {info_hash}")
     else: 
         raise NotImplementedError(f"Unknown command {command}")
 
