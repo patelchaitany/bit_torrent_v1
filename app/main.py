@@ -165,16 +165,24 @@ def get_info_hash(info):
     hash_obj = hashlib.sha1(encoded_info)
     info_hash = hash_obj.digest()
     return info_hash
-def discover_peer(bedecoded_value,flag = 1):
-    info = bedecoded_value[b'info']
+def discover_peer(bedecoded_value,flag = 1,torrent = 0):
+    
     url = str(bedecoded_value[b'announce'],encoding="latin-1")
-    info_hash = get_info_hash(info)
+
+    info = bedecoded_value[b'info']
+    info_hash = info
+    if torrent == 0 :
+        info_hash = get_info_hash(info)
+
     uploaded = 0
     downloaded = 0
     port = 6881
-    left = int(bedecoded_value[b'info'][b'length'])
+    left = 999
+    if torrent == 0:
+        left = int(bedecoded_value[b'info'][b'length'])
     compact = 1
     
+
     peer_id = bedecoded_value[b'peer_id']
     params = {
         "info_hash":info_hash,
@@ -325,25 +333,30 @@ async def recv_async(reader):
         raise ConnectionError("Connection closed before receiving length")
     return length_bytes + message
 
-async def peer_tcp_async(socket_info, decode_data, print_flag=1, download=0):
-    num_pieces = math.ceil(len(decode_data[b'info'][b'pieces']) / 20)
+async def perform_handshke(writer,socket_info,handshake_type = 0):
+    info_hash = socket_info["info_hash"]
+    peer_id = socket_info["peer_id"]
+    protocol_bit = 8*b"\x00"
+    if handshake_type == 1:
+        protocol_bit = 5*b"\x00" + b"\x01" + 2*b"\x00"
+    protocol = b"\x13" + b"BitTorrent protocol" + protocol_bit + info_hash + peer_id
+
+    writer.write(protocol)
+    await writer.drain()
+async def peer_tcp_async(socket_info, decode_data, print_flag=1, download=0,handshake_type=0):
     info_hash = socket_info["info_hash"]
     peer_id = socket_info["peer_id"]
     host = socket_info["host"]
     port = socket_info["port"]
     index = socket_info.get('requested_index', None)
 
-    protocol = b"\x13" + b"BitTorrent protocol" + 8*b"\x00" + info_hash + peer_id
-    have_pieces = bytearray(math.ceil(num_pieces / 8))
-
     request_info = {"begin": 0, "length": 0, "index": 0}
     pices_hash = {}
 
     try:
         reader, writer = await asyncio.open_connection(host, port)
-        writer.write(protocol)
-        await writer.drain()
-        resp = await reader.read(68)
+        await perform_handshke(writer,socket_info,handshake_type=handshake_type)
+        resp= await reader.read(68)
         peer_info = decode_torrent_protocol(resp)
         if print_flag == 1:
             print(f"Peer ID: {peer_info['peer_id'].hex()}")
@@ -364,6 +377,8 @@ async def peer_tcp_async(socket_info, decode_data, print_flag=1, download=0):
         next_message = read_message(bitfield_message, request_info, stage=0)
         next_message = payload_create(request_info, next_message, stage=0)
         
+        num_pieces = math.ceil(len(decode_data[b'info'][b'pieces']) / 20)
+        have_pieces = bytearray(math.ceil(num_pieces / 8))
         #print(f"\n {index} from outside {host} : {port} message type : {next_message['message_type']} \n")
         have_pieces = bytearray(next_message['have_pices'])
 
@@ -444,6 +459,13 @@ def parse_magnet_link(magnet_link):
     url_location = magnet_link.find("tr=") + 3
     url = magnet_link[url_location:]
     return info_hash,url
+
+def get_decode_style(magnet_link,info_hash):
+    bencoded_value = {}
+    bencoded_value[b'info'] = bytes.fromhex(info_hash)
+    bencoded_value[b'announce'] = urllib.parse.unquote(magnet_link).encode("latin-1")
+    bencoded_value[b'peer_id'] = os.urandom(20)
+    return bencoded_value
 def main():
 
     # print([[] , [] , []])
@@ -545,6 +567,20 @@ def main():
         info_hash,url = parse_magnet_link(magnet_link)
         print(f"Tracker URL: {urllib.parse.unquote(url)}")
         print(f"Info Hash: {info_hash}")
+    elif command == "magnet_handshake":
+        magnet_link = sys.argv[2]
+        info_hash,url = parse_magnet_link(magnet_link)
+        bencoded_value = get_decode_style(url,info_hash)
+        peer_info = discover_peer(bencoded_value,torrent=1,flag=0)
+        socket_info = {
+            "info_hash":bencoded_value[b'info'],
+            "peer_id":bencoded_value[b'peer_id']
+        }
+        for i in peer_info:
+            socket_info["host"] = i
+            socket_info["port"] = peer_info[i]
+
+            asyncio.run(peer_tcp_async(socket_info,bencoded_value,print_flag=1,download=0,handshake_type=1)) 
     else: 
         raise NotImplementedError(f"Unknown command {command}")
 
