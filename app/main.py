@@ -437,7 +437,7 @@ async def negociate_handshake(writer,reader,socket_info,handshake_type = 0):
         return None,None
     
     decoded_protocol = decode_torrent_protocol(resp)
-    print(f"decode protocol {decoded_protocol}") 
+    #print(f"decode protocol {decoded_protocol}") 
     supprt_extention = (decoded_protocol["function_byte"][5] & 0x10)!=0
     
     ut_metadata_id = None
@@ -460,7 +460,6 @@ async def negociate_handshake(writer,reader,socket_info,handshake_type = 0):
         length = len(payload_send)
         length = length.to_bytes(4,"big")
         payload_send = length + payload_send
-        print(payload_send)
         
         writer.write(payload_send)
         await writer.drain()
@@ -701,7 +700,7 @@ def main():
 
         if result:
             with open(output_file,'wb') as f:
-                for i in result:
+                for i in sorted(result.keys()):
                     print(f"piece {i}")
                     f.write(result[i])
     elif command == "magnet_parse":
@@ -730,8 +729,10 @@ def main():
             if peer_info_new is None:
                 print(f"Peer Info is not abel to find")
             else :
-                print(f"bitfield {bitfield}")
+                #print(f"bitfield {bitfield}")
+                decoded_bitfield,_ = decode_bencode(bitfield['payload'])
                 print(f"Peer ID: {peer_info_new["peer_id"].hex()}")
+                print(f"Peer Metadata Extension ID: {decoded_bitfield[b'm'][b'ut_metadata']}")
     else: 
         raise NotImplementedError(f"Unknown command {command}")
 
