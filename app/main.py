@@ -731,7 +731,9 @@ def main():
                 print(f"Peer Info is not abel to find")
             else :
                 print(f"bitfield {bitfield}")
+                decoded_bitfield,_ = decode_bencode(bitfield['payload'])
                 print(f"Peer ID: {peer_info_new["peer_id"].hex()}")
+                print(f"Peer Metadata Extension ID : {decoded_bitfield[b'm'][b'ut_metadata']}")
     else: 
         raise NotImplementedError(f"Unknown command {command}")
 
