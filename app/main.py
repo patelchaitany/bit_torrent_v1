@@ -547,6 +547,15 @@ async def peer_tcp_async(socket_info, decode_data,piece_manager,data_buffer,hand
             await piece_manager.mark_failed(index)
         return None
 
+async def get_meta_data(writer,reader,meta_id:int,messaghe_info):
+    encoded_message = bencode(messaghe_info)
+    payload = b"\x14" + meta_id.to_bytes(1,"big") + encoded_message
+    payload = len(payload).to_bytes(4,byteorder="big") + payload
+    
+    if messaghe_info[b'msg_type'] == 0:
+        writer.write(payload)
+        await writer.drain()
+
 
 async def download_whole_file_async(peer_info, decode_data,index = None, timeout=60):
     num_pieces = math.ceil(len(decode_data[b'info'][b'pieces']) / 20)
@@ -733,6 +742,37 @@ def main():
                 decoded_bitfield,_ = decode_bencode(bitfield['payload'])
                 print(f"Peer ID: {peer_info_new["peer_id"].hex()}")
                 print(f"Peer Metadata Extension ID: {decoded_bitfield[b'm'][b'ut_metadata']}")
+    elif command == "magnet_info":
+        magnet_link = sys.argv[2]
+        info_hash,url = parse_magnet_link(magnet_link)
+        bencoded_value = get_decode_style(url,info_hash)
+        peer_info = discover_peer(bencoded_value,torrent=1,flag=0)
+        socket_info = {
+            "info_hash":bencoded_value[b'info'],
+            "peer_id":bencoded_value[b'peer_id']
+        }
+        for i in peer_info:
+            socket_info["host"] = i
+            socket_info["port"] = peer_info[i]
+
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            reader, writer = loop.run_until_complete(asyncio.open_connection(i,peer_info[i]))
+            peer_info_new,bitfield = loop.run_until_complete(negociate_handshake(writer, reader, socket_info,handshake_type=1))
+            if peer_info_new is None:
+                print(f"Peer Info is not abel to find")
+            else :
+                #print(f"bitfield {bitfield}")
+                decoded_bitfield,_ = decode_bencode(bitfield['payload'])
+                meta_id = decoded_bitfield[b'm'][b'ut_metadata']
+                message_info = {
+                    b'msg_type':0,
+                    b'piece':0
+                }
+                loop.run_until_complete(get_meta_data(writer,reader,meta_id,message_info))
+                #print(f"Peer ID: {peer_info_new["peer_id"].hex()}")
+                #print(f"Peer Metadata Extension ID: {decoded_bitfield[b'm'][b'ut_metadata']}")
+            loop.close()
     else: 
         raise NotImplementedError(f"Unknown command {command}")
 
