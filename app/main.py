@@ -244,7 +244,7 @@ def hash_comp(data,hash):
         return 1
     else: 
         return 0
-def read_message(message,request_info,stage = 0):
+def read_message(message):
     message_legth = int.from_bytes(message[0:4],byteorder="big")
     message_type = int.from_bytes(message[4:5])
     payload = message[5:]
@@ -258,7 +258,8 @@ def read_message(message,request_info,stage = 0):
         "begin_index":None,
         "payload":None,
         "piece_index":None,
-        "message_type":message_type
+        "message_type":message_type,
+        "message_id" : None,
     }
     #choke
     if message_type == 0:
@@ -276,6 +277,11 @@ def read_message(message,request_info,stage = 0):
         message_return['data'] = block_data
         message_return['begin_index'] = begin_index
         message_return['piece_index'] = piece_index
+    elif message_type == 20:
+        message_return["message_id"] = int.from_bytes(payload[0:1])
+        message_return["payload"] = payload[1:]
+        
+
     #Now send Intrested message
 
     return message_return
@@ -401,7 +407,7 @@ async def request_piece(reader,writer,index,decode_data,next_message,have_pieces
         await writer.drain()
         
         new_message = await recv_async(reader)
-        next_message = read_message(new_message, request_info, stage=1)
+        next_message = read_message(new_message)
         #print(f"\n {index} {30*"-"} \n from while {host} : {port} \n message type : {next_message['message_type']} \n {30*"-"}\n")
         if next_message['stop']:
             break
@@ -422,6 +428,54 @@ async def request_piece(reader,writer,index,decode_data,next_message,have_pieces
     #print(f"{index} I am returning from this {host} : {port}") 
     return pices_hash
 
+
+
+async def negociate_handshake(writer,reader,socket_info,handshake_type = 0):
+    resp = await perform_handshke(writer,reader,socket_info,handshake_type= handshake_type)
+    
+    if len(resp) < 68:
+        return None,None
+    
+    decoded_protocol = decode_torrent_protocol(resp)
+    print(f"decode protocol {decoded_protocol}") 
+    supprt_extention = (decoded_protocol["function_byte"][5] & 0x10)!=0
+    
+    ut_metadata_id = None
+
+    if "send_bitfield" in socket_info:
+        bitfield_payload = b"\x05" + socket_info["send_bitfield"]
+        message_legth = len(bitfield_payload).to_bytes(1,byteorder="big")
+        bitfield_payload = message_legth + bitfield_payload
+        writer.writer(message_legth)
+        await writer.drain()
+
+    resp_bitfield = await recv_async(reader)
+    resp_bitfield = read_message(resp_bitfield)
+    resp_handshake = None
+    if supprt_extention:
+        handshake_dict = {b"m":{b"ut_metadata" : 1 }}
+        handshake_encoded = bencode(handshake_dict)
+        message_id = b"\x14"
+        payload_send = message_id + b"\x00" + handshake_encoded
+        length = len(payload_send)
+        length = length.to_bytes(1,"big")
+        payload_send = length + payload_send
+        print(payload_send)
+        
+        writer.write(payload_send)
+        await writer.drain()
+
+        resp_handshake = await recv_async(reader)
+
+        resp_handshake = read_message(resp_handshake)
+        #print(f"extended handshake {decode_bencode(resp_handshake['payload'])}")
+
+    if resp_handshake:
+        resp_bitfield["message_id"] = resp_handshake["message_id"]
+        resp_bitfield["payload"] = resp_handshake["payload"]
+
+    return decoded_protocol,resp_bitfield
+
 async def peer_tcp_async(socket_info, decode_data,piece_manager,data_buffer,handshake_type=0):
     host = socket_info["host"]
     port = socket_info["port"]
@@ -431,19 +485,23 @@ async def peer_tcp_async(socket_info, decode_data,piece_manager,data_buffer,hand
     state = 0
     try:
         reader, writer = await asyncio.open_connection(host, port)
-        resp = await perform_handshke(writer,reader,socket_info,handshake_type=handshake_type)
-        peer_info = decode_torrent_protocol(resp)
-        #print(f"Peer Info {peer_info}")
+        
+        peer_info,next_message = await negociate_handshake(writer,reader,socket_info,handshake_type)
+
+        print(f"Peer Info {peer_info}")
+        if peer_info is None or next_message is None:
+            writer.close()
+            await writer.wait_closed()
+            #print(f"closed Due to peer Handshake Failded")
+            return None
         if peer_info['length'] == 0:
             writer.close()
             await writer.wait_closed()
             #print(f"closed Due to peer Handshake Failded")
             return None
-        bitfield_message = await recv_async(reader)
         
         #print(f"Bit Field {bitfield_message}")
 
-        next_message = read_message(bitfield_message, request_info, stage=state)
         next_message = payload_create(request_info, next_message, stage=state)
         
         num_pieces = math.ceil(len(decode_data[b'info'][b'pieces']) / 20)
@@ -667,10 +725,12 @@ def main():
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             reader, writer = loop.run_until_complete(asyncio.open_connection(i,peer_info[i]))
-            resp = loop.run_until_complete(perform_handshke(writer, reader, socket_info,handshake_type=1))
+            peer_info_new,_ = loop.run_until_complete(negociate_handshake(writer, reader, socket_info,handshake_type=1))
             loop.close()
-            peer_info_new = decode_torrent_protocol(resp)
-            print(f"Peer ID: {peer_info_new["peer_id"].hex()}")
+            if peer_info_new is None:
+                print(f"Peer Info is not abel to find")
+            else :
+                print(f"Peer ID: {peer_info_new["peer_id"].hex()}")
     else: 
         raise NotImplementedError(f"Unknown command {command}")
 
