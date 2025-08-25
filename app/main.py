@@ -244,6 +244,13 @@ def hash_comp(data,hash):
         return 1
     else: 
         return 0
+
+def decode_metadata(data):
+    decode_data,index = decode_bencode(data)
+    meta_data = None
+    if decode_data[b'msg_type'] == 1:
+        meta_data = data[index:]
+    return decode_data,meta_data
 def read_message(message):
     message_legth = int.from_bytes(message[0:4],byteorder="big")
     message_type = int.from_bytes(message[4:5])
@@ -366,6 +373,37 @@ class PieceManager:
 
     def get_size(self):
         return len(self.needed_pieces)
+
+class MetadataManger:
+
+    def __init__(self,num_pieces):
+        self.num_pieces = num_pieces
+        self.pieces = {i: None for i in range(num_pieces)}
+        self.lock = asyncio.Lock()
+
+    async def get_next_missing(self):
+        async with self.lock:
+            for i,data in self.pieces.items():
+                if data is None:
+                    self.pieces[i] = b'get'
+                    return i
+        return None
+
+    async def add_piece(self,index,data):
+        async with self.lock:
+            self.pieces[index] = data
+    
+    async def falied(self,index):
+        async with self.lock:
+            if self.pieces[index] == b'get':
+                self.pieces[index] = None
+
+    async def is_complete(self):
+        async with self.lock:
+            return all(v is not None for v in self.pieces.values())
+    
+    def assemble(self):
+        return b''.join(self.pieces[i] for i in range(self.num_pieces))
 
 
 async def perform_handshke(writer,reader,socket_info,handshake_type = 0):
@@ -547,15 +585,79 @@ async def peer_tcp_async(socket_info, decode_data,piece_manager,data_buffer,hand
             await piece_manager.mark_failed(index)
         return None
 
-async def get_meta_data(writer,reader,meta_id:int,messaghe_info):
-    encoded_message = bencode(messaghe_info)
-    payload = b"\x14" + meta_id.to_bytes(1,"big") + encoded_message
-    payload = len(payload).to_bytes(4,byteorder="big") + payload
-    
-    if messaghe_info[b'msg_type'] == 0:
-        writer.write(payload)
-        await writer.drain()
+async def get_meta_data(writer,reader,meta_id:int,messaghe_info,meta_manager:MetadataManger,host,port):
 
+    while True:
+        piece_index = await meta_manager.get_next_missing()
+        print(f"index {piece_index} {host} {port}")
+        if piece_index is None:
+            break
+        messaghe_info[b'piece'] = piece_index
+        
+        encoded_message = bencode(messaghe_info)
+        payload = b"\x14" + meta_id.to_bytes(1,"big") + encoded_message
+        payload = len(payload).to_bytes(4,byteorder="big") + payload
+        meta_data = None 
+        if messaghe_info[b'msg_type'] == 0:
+            writer.write(payload)
+            await writer.drain()
+        
+            resp = await recv_async(reader)
+            resp =read_message(resp)
+        
+            other_info,meta_data = decode_metadata(resp['payload'])
+                
+        if meta_data is None:
+            await meta_manager.falied(piece_index)
+        else:
+            await meta_manager.add_piece(piece_index,meta_data)
+
+async def meta_info_downloader(peer_info,socket_info):
+    meta_manager = None
+
+    async def download(host,port):
+        nonlocal meta_manager
+        reader,writer = await asyncio.open_connection(host=host,port=port)
+        peer_info_new,bitfield = await negociate_handshake(writer,reader,socket_info,handshake_type=1)
+        decode_meta_info ,_ = decode_bencode(bitfield['payload'])
+        meta_id = decode_meta_info[b'm'][b'ut_metadata']
+        meta_data_size = decode_meta_info[b'metadata_size']
+        message_info = {
+            b'msg_type':0,
+            b'piece':0
+        }
+        if meta_manager is None:
+            num_pieces = math.ceil(meta_data_size/16384)
+            meta_manager = MetadataManger(num_pieces)
+
+        while True:
+            if meta_manager is not None:
+                break
+
+        await get_meta_data(writer,reader,meta_id,message_info,meta_manager,host,port)
+
+        await writer.drain()
+        writer.close()
+
+    task = []
+
+    for i in peer_info:
+        task.append(asyncio.create_task(download(i,peer_info[i])))
+
+    await asyncio.gather(*task)
+    
+    if meta_manager:
+        decoded_meta_data,_ = decode_bencode(meta_manager.assemble())
+        calculated_info_hash= get_info_hash(decoded_meta_data)
+        if calculated_info_hash == socket_info['info_hash']:
+            print(decoded_meta_data)
+            return decoded_meta_data
+        else:
+            print(f"it dose not matched ")
+            return None
+
+
+    
 
 async def download_whole_file_async(peer_info, decode_data,index = None, timeout=60):
     num_pieces = math.ceil(len(decode_data[b'info'][b'pieces']) / 20)
@@ -751,28 +853,20 @@ def main():
             "info_hash":bencoded_value[b'info'],
             "peer_id":bencoded_value[b'peer_id']
         }
-        for i in peer_info:
-            socket_info["host"] = i
-            socket_info["port"] = peer_info[i]
 
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            reader, writer = loop.run_until_complete(asyncio.open_connection(i,peer_info[i]))
-            peer_info_new,bitfield = loop.run_until_complete(negociate_handshake(writer, reader, socket_info,handshake_type=1))
-            if peer_info_new is None:
-                print(f"Peer Info is not abel to find")
-            else :
-                #print(f"bitfield {bitfield}")
-                decoded_bitfield,_ = decode_bencode(bitfield['payload'])
-                meta_id = decoded_bitfield[b'm'][b'ut_metadata']
-                message_info = {
-                    b'msg_type':0,
-                    b'piece':0
-                }
-                loop.run_until_complete(get_meta_data(writer,reader,meta_id,message_info))
-                #print(f"Peer ID: {peer_info_new["peer_id"].hex()}")
-                #print(f"Peer Metadata Extension ID: {decoded_bitfield[b'm'][b'ut_metadata']}")
-            loop.close()
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        decoded_metadata = loop.run_until_complete(meta_info_downloader(peer_info,socket_info))
+        print(f"Tracker URL: {urllib.parse.unquote(url)}")
+        print(f"Length: {decoded_metadata[b'length']}")
+        print(f"Info Hash: {bencoded_value[b'info'].hex()}")
+        print(f"Piece Length: {decoded_metadata[b'piece length']}")
+        print(f"Piece Hashes:")
+        for i in range(0,len(decoded_metadata[b'pieces']),20):
+            print(f"{decoded_metadata[b'pieces'][i:i+20].hex()}")
+
+        loop.close()
     else: 
         raise NotImplementedError(f"Unknown command {command}")
 
