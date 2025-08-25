@@ -900,6 +900,40 @@ def main():
             with open(output_file,'wb') as f:
                 if pices_data[piece_nr]:
                     f.write(pices_data[piece_nr])
+
+    elif command == "magnet_download":
+        output_file = sys.argv[3]
+        magnet_link = sys.argv[4]
+        info_hash,url = parse_magnet_link(magnet_link)
+        bencoded_value = get_decode_style(url,info_hash)
+        peer_info = discover_peer(bencoded_value,torrent=1,flag=0)
+        socket_info = {
+            "info_hash":bencoded_value[b'info'],
+            "peer_id":bencoded_value[b'peer_id']
+        }
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        decoded_metadata = loop.run_until_complete(meta_info_downloader(peer_info,socket_info))
+        print(f"Tracker URL: {urllib.parse.unquote(url)}")
+        print(f"Length: {decoded_metadata[b'length']}")
+        print(f"Info Hash: {bencoded_value[b'info'].hex()}")
+        print(f"Piece Length: {decoded_metadata[b'piece length']}")
+        print(f"Piece Hashes:")
+        for i in range(0,len(decoded_metadata[b'pieces']),20):
+            print(f"{decoded_metadata[b'pieces'][i:i+20].hex()}")
+        
+        bencoded_value[b'info'] = decoded_metadata
+        
+        result = loop.run_until_complete(download_whole_file_async(peer_info,bencoded_value,handshake_type=1))
+        loop.close()
+
+        if result:
+            with open(output_file,'wb') as f:
+                for i in sorted(result.keys()):
+                    print(f"piece {i}")
+                    f.write(result[i])
     else: 
         raise NotImplementedError(f"Unknown command {command}")
 
