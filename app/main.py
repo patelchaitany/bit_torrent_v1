@@ -548,7 +548,7 @@ async def peer_tcp_async(socket_info, decode_data,piece_manager,data_buffer,hand
         decode_data[b'port'] = port
         index = await piece_manager.get_piece_for_peer(have_pieces)
 
-        #print(f"\n {index} from outside {host} : {port} message type : {next_message['message_type']} \n")
+        print(f"\n {index} from outside {host} : {port} message type : {next_message['message_type']} \n")
 
         if index is None:
             not_interested = (1).to_bytes(4, "big") + b"\x03"
@@ -659,7 +659,7 @@ async def meta_info_downloader(peer_info,socket_info):
 
     
 
-async def download_whole_file_async(peer_info, decode_data,index = None, timeout=60):
+async def download_whole_file_async(peer_info, decode_data,index = None,handshake_type = 0):
     num_pieces = math.ceil(len(decode_data[b'info'][b'pieces']) / 20)
     info_hash = get_info_hash(decode_data[b'info'])
     current_have = bytearray(num_pieces * b'\x00')
@@ -683,7 +683,7 @@ async def download_whole_file_async(peer_info, decode_data,index = None, timeout
                 "info_hash": info_hash,
             }
             task.append(asyncio.create_task(
-                peer_tcp_async(socket_info_copy, decode_data, piece_manager, data_buffer)
+                peer_tcp_async(socket_info_copy, decode_data, piece_manager, data_buffer,handshake_type=handshake_type)
             ))
         
         result = await asyncio.gather(*task)
@@ -867,6 +867,39 @@ def main():
             print(f"{decoded_metadata[b'pieces'][i:i+20].hex()}")
 
         loop.close()
+    elif command == "magnet_download_piece":
+        output_file = sys.argv[3]
+        magnet_link = sys.argv[4]
+        piece_nr = int(sys.argv[5])
+        info_hash,url = parse_magnet_link(magnet_link)
+        bencoded_value = get_decode_style(url,info_hash)
+        peer_info = discover_peer(bencoded_value,torrent=1,flag=0)
+        socket_info = {
+            "info_hash":bencoded_value[b'info'],
+            "peer_id":bencoded_value[b'peer_id']
+        }
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        decoded_metadata = loop.run_until_complete(meta_info_downloader(peer_info,socket_info))
+        print(f"Tracker URL: {urllib.parse.unquote(url)}")
+        print(f"Length: {decoded_metadata[b'length']}")
+        print(f"Info Hash: {bencoded_value[b'info'].hex()}")
+        print(f"Piece Length: {decoded_metadata[b'piece length']}")
+        print(f"Piece Hashes:")
+        for i in range(0,len(decoded_metadata[b'pieces']),20):
+            print(f"{decoded_metadata[b'pieces'][i:i+20].hex()}")
+        
+        bencoded_value[b'info'] = decoded_metadata
+        
+        pices_data = loop.run_until_complete(download_whole_file_async(peer_info,bencoded_value,index = piece_nr,handshake_type=1))
+        loop.close()
+
+        if pices_data:
+            with open(output_file,'wb') as f:
+                if pices_data[piece_nr]:
+                    f.write(pices_data[piece_nr])
     else: 
         raise NotImplementedError(f"Unknown command {command}")
 
