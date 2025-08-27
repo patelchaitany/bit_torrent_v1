@@ -1,0 +1,8 @@
+services:
+  tracker:
+    image: torrust/tracker:latest
+    ports:
+      - "6969:6969/udp"  # UDP Tracker
+      - "7070:7070/tcp"  # HTTP Tracker
+      - "1212:1212/tcp"  # REST API
+      - "1313:1313/tcp"  # Health-Check API
