@@ -4,7 +4,6 @@ import sys
 import asyncio
 from typing import Dict, List, _type_repr
 import hashlib
-import struct
 # import bencodepy #- available if you need it!
 import requests  # - available if you need it!
 import os
@@ -15,36 +14,6 @@ from collections import defaultdict
 import urllib.parse
 import time
 import random
-import traceback
-import inspect
-import datetime
-import threading
-from concurrent.futures import ThreadPoolExecutor
-import asyncio
-
-bytes_in = 0
-bytes_out = 0
-
-executor = ThreadPoolExecutor(max_workers=20)
-def log(*args, level="INFO", **kwargs):
-    """
-    Custom logging function that shows timestamp, level,
-    caller function, filename, and line number.
-    """
-    # Get caller info
-    frame = inspect.stack()[1]
-    caller_func = frame.function
-    line_no = frame.lineno
-    filename = frame.filename.split("/")[-1]  # only filename, not full path
-
-    # Timestamp
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    # Format log message
-    prefix = f"[{caller_func}|{line_no}]"
-    if level == "Status" or level == "Error" or level == "Warning":#or level == "INFO":
-        print(prefix, "-", *args, **kwargs)
-    #print(prefix, "-", *args, **kwargs)
 # Examples:
 #
 # - decode_bencode(b"5:hello") -> b"hello"
@@ -124,9 +93,8 @@ def read_torrent(file_path,print_flag = 1):
         peer_id = os.urandom(20)
         with open(file_path,"rb") as f:
             data = f.read()
-
+        
         decoded_data,_ = decode_bencode(data)
-        # print(decoded_data[b'info'])
         decoded_data[b'peer_id'] = peer_id
         try:
             # pass
@@ -135,19 +103,19 @@ def read_torrent(file_path,print_flag = 1):
             hash_object = hashlib.sha1(encoded_info)
             hex_dig = hash_object.hexdigest()
             piece_hex = decoded_data[b"info"][b"pieces"].hex()
+
         except KeyError:
             raise ValueError("The torrent file does not contain the 'info' key.")
         tracker_url = decoded_data[b"announce"].decode("utf-8")
         file_length_pice = decoded_data[b"info"][b'piece length']
 
         file_length = decoded_data[b"info"][b'length']
-        
         if print_flag:
             print(f"Tracker URL: {tracker_url}")
             print(f"Length: {file_length}")
             print(f"Info Hash: {hex_dig}")
             print(f"Piece Length: {file_length_pice}")
-            #print(f"Piece Hashes: \n{"\n".join([piece_hex[i:i+40] for i in range(0,len(piece_hex),40)])}")
+            print(f"Piece Hashes: \n{"\n".join([piece_hex[i:i+40] for i in range(0,len(piece_hex),40)])}")
         return decoded_data
     except (FileNotFoundError, ValueError) as e:
         print(f"Error reading or parsing the torrent file: {e}", file=sys.stderr)
@@ -184,12 +152,6 @@ def bencode(bedecoded_value):
 def peer_decoding(peer_bytes):
     num_peers = len(peer_bytes)//6
     ip_port = {}
-    if isinstance(peer_bytes,list):
-        for i in peer_bytes:
-            ip_byte = str(i[b'ip'],encoding="latin-1")
-            port = i[b'port']
-            ip_port[ip_byte] = port
-        return ip_port
     for i in range(0,len(peer_bytes),6):
         ip_byte = peer_bytes[i:i+4]
         port_byte = peer_bytes[i+4:i+6]
@@ -206,81 +168,63 @@ def get_info_hash(info):
     info_hash = hash_obj.digest()
     return info_hash
 def discover_peer(bedecoded_value,flag = 1,torrent = 0):
+    
+    url = str(bedecoded_value[b'announce'],encoding="latin-1")
 
-    url_list = [str(bedecoded_value[b'announce'],encoding="latin-1")]
-    if b'announce-list' in bedecoded_value:
-        print(f"becoded value {bedecoded_value[b'announce-list']}")
-        for url in bedecoded_value[b'announce-list']:
-            if isinstance(url,list):
-                for i in url:
-                    url_list.append(str(i,encoding="latin-1"))
-            else:
-                url_list.append(str(url,encoding="latin-1"))
-    return_peer_ip = {}
+    info = bedecoded_value[b'info']
+    info_hash = info
+    if torrent == 0 :
+        info_hash = get_info_hash(info)
+
+    uploaded = 0
+    downloaded = 0
+    port = 6881
+    left = 999
+    if torrent == 0:
+        left = int(bedecoded_value[b'info'][b'length'])
+    compact = 1
+    
+
+    peer_id = bedecoded_value[b'peer_id']
+    params = {
+        "info_hash":info_hash,
+        "peer_id":peer_id,
+        "port":port,
+        "uploaded":uploaded,
+"downloaded":downloaded,
+        "left":left,
+        "compact":compact
+    }
     try:
-        for url in url_list:
-
-            print(f"trying url {url}")
-            if url.startswith("http://") or url.startswith("https://"):
-                info = bedecoded_value[b'info']
-                info_hash = info
-                if torrent == 0 :
-                    info_hash = get_info_hash(info)
-
-                uploaded = 0
-                downloaded = 0
-                port = 6881
-                left = 999
-                if torrent == 0:
-                    left = int(bedecoded_value[b'info'][b'length'])
-                compact = 1
-
-
-                peer_id = bedecoded_value[b'peer_id']
-                params = {
-                    "info_hash":info_hash,
-                    "peer_id":peer_id,
-                    "port":port,
-                    "uploaded":uploaded,
-            "downloaded":downloaded,
-                    "left":left,
-                    "compact":compact
-                }
-
-                response = requests.get(url = url,params= params)
-                decoded_responce,_ = decode_bencode(response.content)
-                log(decoded_responce)
-                port_ip = peer_decoding(decoded_responce[b'peers'])
-                for i in port_ip:
-                    if i not in return_peer_ip:
-                        return_peer_ip[i] = port_ip[i]
-                    if flag:
-                        log(f"{i}:{port_ip[i]}")
-
-        return return_peer_ip
+        response = requests.get(url = url,params= params)
+        decoded_responce,_ = decode_bencode(response.content)
+        port_ip = peer_decoding(decoded_responce[b'peers']) 
+        if flag:
+            for i in port_ip:
+                print(f"{i}:{port_ip[i]}")
+        return port_ip
     except Exception as e:
-        traceback.print_exc()
         raise ValueError(f"{e}")
 
 def decode_torrent_protocol(data):
-    print(f"decode_torrent_protocol {data}")
     length = int.from_bytes(data[0:1])
     bit_string = str(data[1:20],encoding="latin-1")
     function_byte = data[20:28]
     info_hash = data[28:48]
     peer_id = data[48:68]
-
+    
     decode_info = {}
     decode_info["length"] = length
     decode_info["bit_string"] = bit_string
     decode_info["function_byte"] = function_byte
     decode_info["info_hash"] = info_hash
     decode_info["peer_id"] = peer_id
-    return decode_info
+   
 
+    return decode_info
+    
 # This function read the current responce and acording it return the next message pay load and also set the step in which we are
 def payload_create(request_info,message_return,stage = 0):
-    log(f"request_info {request_info}")
     payload_next = b''
     # state 1 is for intrested and state 2 for the request
     if stage == 1:
@@ -301,14 +245,10 @@ def hash_comp(data,hash):
     binary_hash = hash_obeject.digest()
     if binary_hash == hash:
         return 1
-    else:
+    else: 
         return 0
 
 def decode_metadata(data):
-    
-    print(f"\033[92mdecode_metadata {data}\033[0m")
-    if data is None:
-        return None,None
     decode_data,index = decode_bencode(data)
     meta_data = None
     if decode_data[b'msg_type'] == 1:
@@ -318,7 +258,7 @@ def read_message(message):
     message_legth = int.from_bytes(message[0:4],byteorder="big")
     message_type = int.from_bytes(message[4:5])
     payload = message[5:]
-    log(f"messgae Length {message_legth} {message_type}")
+
     message_return = {
         "stop":0,
         "downloaded_idx":None,
@@ -348,10 +288,9 @@ def read_message(message):
         message_return['begin_index'] = begin_index
         message_return['piece_index'] = piece_index
     elif message_type == 20:
-        # print(f"\033[92mextended message {payload}\033[0m")
         message_return["message_id"] = int.from_bytes(payload[0:1])
         message_return["payload"] = payload[1:]
-
+        
 
     #Now send Intrested message
 
@@ -379,50 +318,61 @@ def is_bit_set(bytearray_data, bit_index):
     byte_index = bit_index // 8
     bit_position = bit_index % 8
     return (bytearray_data[byte_index] & (1 << (7 - bit_position))) != 0
+def recv(s):
+    length = s.recv(4)
+    while not length or not int.from_bytes(length):
+        length = s.recv(4)
+    message = s.recv(int.from_bytes(length))
+
+    while len(message)<int.from_bytes(length):
+        message = message + s.recv(int.from_bytes(length) - len(message))
+    
+    return length + message
+
 async def recv_async(reader,flag = 0):
     # Read 4-byte length prefix
-    global bytes_in
     if flag == 0:
-        log(f"trying to read _buffer {len(reader._buffer)} {reader.at_eof()}")
-        length_bytes = await reader.readexactly(4)
 
+        length_bytes = await reader.read(4)
+        while len(length_bytes) < 4:
+            more = await reader.read(4 - len(length_bytes))
+            length_bytes += more
+    
         if len(length_bytes) < 4:
             raise ConnectionError("Connection closed before receiving length")
         length = int.from_bytes(length_bytes, byteorder='big')
-        log(f"messgae Len {length}")
+        print(f"messgae Len {length}")
     # Read the message payload
         message = b""
-        
-        chunk = await reader.readexactly(length - len(message))
-        message += chunk
-        log(f"chunk len {len(message)}")
+        while len(message) < length:
+            print(f"chunk len {len(message)}")
+            chunk = await reader.read(length - len(message))
+            message += chunk
         if len(message)<length:
             raise ConnectionError("Connection closed before receiving length")
 
-        log(f"returens the readed message bytes")
-        bytes_in += len(length_bytes) + len(message)
         return length_bytes + message
 
     if flag == 1:
-        log(f"trying to read _buffer {len(reader._buffer)} {reader.at_eof()}")
-        if not reader._buffer:
-            log(f"no data")
-            return None
+        print(f"trying to read _buffer")
+        if not reader._buffer and not reader.at_eof():
+            print(f"no data")
+            return None  
+        if len(reader._buffer) < 4:
+            return None  
         length_bytes = await reader.readexactly(4)
         length = int.from_bytes(length_bytes, "big")
-        log(f"message Len {length}")
+        print(f"message Len {length}")
 
         if length == 0:
             return length_bytes  # keepalive
 
         message = await reader.readexactly(length)
-        log(f"returens the readed message bytes")
-        bytes_in += len(length_bytes) + len(message)
         return length_bytes + message
 
 class PieceManager:
     def __init__(self,num_pieces):
-
+        
         self.needed_pieces = set()
         self.lock = asyncio.Lock()
         if isinstance(num_pieces,List):
@@ -440,7 +390,7 @@ class PieceManager:
                     self.needed_pieces.remove(idx)
                     return idx
         return None
-
+    
     async def mark_failed(self,idx):
         async with self.lock:
             self.needed_pieces.add(idx)
@@ -455,165 +405,117 @@ class Peer:
         self.reader : asyncio.StreamReader | None = None
         self.writer : asyncio.StreamWriter | None = None
         self.num_pieces = peer_info['num_pieces']
-        self.have_pieces = bytearray(math.ceil(self.num_pieces/8)*b"\x00")
+        self.have_pieces = bytearray(self.num_pieces*b"\x00")
         self.peer_id = None
-        self.handshake_type = peer_info["handshake_type"]
+        self.handshake_type = 0
         self.state = 0
         self.intrested = 0
         self.data_map = {}
         self.last_keepalive = time.time()
         self.throughput = -float('inf')
         self.manager : PeerManager= manager
-        self.piece_event = {}
-        self.writer_lock =asyncio.Lock()
-        self.reader_lock = asyncio.Lock()
-        self.chocke = asyncio.Event()
 
-        log(f"object is created {self.__repr__()}")
+        print(f"object is created {self.__repr__()}")
         # state = 0 : intial state
         # state = 1 : ready to send intrested message
         # state = 2 : unchocked and ready to send piece request
-        # state = 3 : chocked
-
+        # state = 3 : chocked 
     async def start(self):
-        log(f"Peer.start() called for {self.host}:{self.port}")
+        print(f"Peer.start() called for {self.host}:{self.port}")
         try:
             await self._setup()
-            log(f"Peer._setup() completed for {self.host}:{self.port}")
+            print(f"Peer._setup() completed for {self.host}:{self.port}")
         except Exception as e:
-            log(f"Error in Peer.start() for {self.host}:{self.port}: {e}",level="Error")
-            self.manager.remove_peer(self)
+            print(f"Error in Peer.start() for {self.host}:{self.port}: {e}")
+            import traceback
             traceback.print_exc()
     def __repr__(self) -> str:
-        return f"host : {self.host} port : {self.port} peer_id : {self.peer_id} {self.state}"
+        return f"host : {self.host} port : {self.port} peer_id : {self.peer_id} "
     async def _setup(self):
         try:
 
-            log(f"shake is ongoing {self.__repr__()}")
+            print(f"shake is ongoing {self.__repr__()}")
             self.reader , self.writer = await asyncio.open_connection(self.host,self.port)
-
-            if self.reader is None or self.writer is None:
-                self.manager.remove_peer(self)
-                log(f"{self.__repr__()} peer have zero writer and zero reader")
-
-            async with self.reader_lock:
-                async with self.writer_lock:
-                    decoded_info,resp_bitfield = await negociate_handshake(self.writer,self.reader,self.socket_info,handshake_type= self.handshake_type)
+            decoded_info,resp_bitfield = await negociate_handshake(self.writer,self.reader,self.socket_info,handshake_type= self.handshake_type)
             if decoded_info:
                 self.peer_id = decoded_info['peer_id']
+                if self.peer_id is None:
+                    print(f"peer_id is None")
+                    self.manager.remove_peer(self)
+                    return
                 if self.socket_info['info_hash'] != decoded_info['info_hash']:
-                    log(f"The info hash did not matched",level="Warning")
+                    print(f"The info hash did not matched")
                     self.state = -1
                     self.manager.remove_peer(self)
                     return
             if resp_bitfield:
-                if resp_bitfield['have_pices']:
-                    log(f"resp bitfiel {resp_bitfield.keys()}")
-                    self.have_pieces = bytearray(resp_bitfield['have_pices'])
-
-            if self.peer_id is None:
-                log(f"peer_id is None")
-                self.manager.remove_peer(self)
-                return
+                self.have_pieces = bytearray(resp_bitfield['have_pices'])
+            
             self.state = 1
             asyncio.create_task(self.reader_loop())
-            #asyncio.run_coroutine_threadsafe(self.reader_loop(),Peer._loop)
-            log(f"shake is succssfull {self.__repr__()}")
+            print(f"shake is succssfull {self.__repr__()}")
         except Exception as e:
             self.manager.remove_peer(self)
-            log(f"Failed To cnnect -> {self.host} {self.port} {e}",level="Error")
-
-            traceback.print_exc()
-
+            print(f"Failed To cnnect -> {self.host} {self.port} {e}")
+    
     async def reader_loop(self):
 
-        log(f"reader loop")
+        print(f"reader loop")
         while True:
             try:
-                log(f"reader indide form while {self.__repr__()}")
+                    
+                print(f"reader indide form while {self.__repr__()}")
                 start_time = time.time()
                 bytes_received = 0
-                async with self.reader_lock:
-                    raw_msg = await recv_async(self.reader)
-                
+                raw_msg = await recv_async(self.reader,flag=1)
                 if raw_msg == None:
-                    log(f"the raw_msg is None {self.__repr__()}")
-                    await asyncio.sleep(0.1)
+                    print(f"the raw_msg is None")
+                    await asyncio.sleep(5)
                     continue
-                log(f"[{self.__repr__()}] print the raw msg {len(raw_msg)}")
                 bytes_received += len(raw_msg)
                 elapsed = time.time() - start_time
                 self.throughput = bytes_received / elapsed if elapsed > 0 else 0  # bytes per second
-
-
+            
+               
                 message = read_message(raw_msg)
-
+                
+                print(f"[Peer {self.host}:{self.port}] Downloaded {bytes_received} bytes in "
+                f"{elapsed:.2f} sec → Throughput: {self.throughput/1024:.2f} {message} KB/s")
                 if message['stop'] == 1 or self.state == 3:
                     if message['stop'] == 0:
                         self.state = 2
-                        self.chocke.set()
                     if message['stop'] == 1:
                         self.state = 3
-                        self.chocke.clear()
                 if message['stop'] == 0:
                     self.state = 2
-                    self.chocke.set()
                 if message['message_type'] == 7:
-                    piece_key = (message['piece_index'],int.from_bytes(message['begin_index']))
-                    self.data_map[piece_key] = message['data']
-                    if piece_key in self.piece_event:
-                        event = self.piece_event.pop(piece_key) # Pop to clean up
-                        event.set() #
+                    self.data_map[(message['piece_index'],message['begin'])] = message['data']
                 if message['message_type'] == 4:
-                    log(f"\03392m have message received {self.__repr__()} {int.from_bytes(message['have_idx'],byteorder='big')}\033[0m")
                     set_piece(self.have_pieces,int.from_bytes(message['have_idx'],byteorder="big"))
                 if message['message_type'] == 5:
-                    self.have_pieces = bytearray(message['have_pices'])
-                if message['message_type'] == 20:
-                    payload = decode_bencode(message['payload'])
-                    print(f"{30*'='}")
-                    print(f"\n\n\n")
-                    print(f"\033[92mextended message received {payload}\033[0m")
-                    print(f"\n\n\n")
-                    print(f"{30*'='}")
-                    print(f"\n\n\n")
-                log(f"[Peer {self.host}:{self.port} {self.state}] Downloaded {bytes_received} bytes in "
-                f"{elapsed:.2f} sec → Throughput: {self.throughput/1024:.2f} {message['begin_index']} {message['piece_index']} KB/s")
-                await asyncio.sleep(0.1)
+                    self.have_pieces = bytearray(message['have_pieces'])
             except Exception as e:
-                log(f"peer {self} disconnected {e}")
-                self.manager.remove_peer(self)
-                traceback.print_exc()
+                print(f"peer {self.peer_id} disconnected {e}")
                 break
 
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(5)
 
     async def send_msg(self,payload = None):
-        global bytes_out
         if payload is None:  # keepalive
             payload = (0).to_bytes(4, "big")
-        try:
-        # Lock was acquired
-            async with self.writer_lock:
-                log(f"[{self.__repr__()}]>> Lock acquired! {payload}")
-                self.writer.write(payload)
-                await self.writer.drain()
-                bytes_out += len(payload)
-        except Exception as e:
-            log(f"an Exception is occurred {e}",level="Error")
-            self.manager.remove_peer(self)
-
-            traceback.print_exc()
-
+        self.writer.write(payload)
+        await self.writer.drain()
+        self.last_keepalive = time.time()
     async def request_piece(self,decoded_data,index):
         pices_hash = {}
         num_pieces = math.ceil(len(decoded_data[b'info'][b'pieces'])/20)
-        piece_length = decoded_data[b'info'][b'piece length']
-        total_length_file = decoded_data[b'info'][b'length']
+        piece_length = decoded_data[b'info'][b'piece_length']
+        total_length_file = decode_data[b'info'][b'length']
 
-        total_length = piece_length
         if index == num_pieces - 1:
             total_length = total_length_file % piece_length
+        else:
+            total_length = piece_length
 
         request_info = {"begin": 0, "length": 0, "index": 0}
         request_info["length"] = min(16*1024, total_length)  # 16KB blocks
@@ -621,35 +523,28 @@ class Peer:
         request_info['begin'] = 0
         next_message = {}
         next_message = payload_create(request_info,next_message,stage= self.state)
-
+        
         if self.state == 1:
-            log(f"[{self.__repr__()}]sending the intreseted messgae {total_length}")
+            print(f"sending the intreseted messgae ")
             await self.send_msg(next_message['payload'])
 
-        next_message = payload_create(request_info,next_message,self.state)
-
+        if next_message['stop'] == 1 or self.state == 3:
+            if next_message['stop'] == 0:
+                self.state = 2
+            if next_message['stop'] == 1:
+                self.state = 3
+        
+        next_message = payload_create(next_message,request_info,self.state)
         while total_length>0:
-
-            log(f"[{self.__repr__()}]waiting for being unchocked")
-            if self.state == 3 or self.state == 1:
-                await self.chocke.wait()
-            #await asyncio.sleep(0.1)
-            log(f"inside while loop {request_info}")
-            next_message = payload_create(request_info,next_message,self.state)
+            if self.state == 3:
+                print("waiting for being unchocked")
+                continue
             await self.send_msg(next_message['payload'])
-            log(f"the payload is written {next_message['payload']}")
-            piece_key = (index,request_info['begin'])
-
-
-            if piece_key not in self.data_map:
-                if piece_key not in self.piece_event:
-                    self.piece_event[piece_key] = asyncio.Event()
-                event = self.piece_event[piece_key]
-                log(f"Payload sent, now waiting for piece: {piece_key}")
-                await event.wait()
-                log(f"Event received! Data has arrived for piece: {piece_key}")
-
-
+            print(f"the payload is written {next_message['payload']}")
+            while (index,request_info['begin']) not in self.data_map:
+                print(f"waiting for getting the data for {index} {self.host} {self.port}")
+                continue
+            
             data = self.data_map[(index,request_info['begin'])]
             if index in pices_hash:
                 pices_hash[index] += data
@@ -659,100 +554,59 @@ class Peer:
             request_info['begin'] += len(data)
             total_length -= len(data)
             request_info['length'] = min(16*1024, total_length)
-            await asyncio.sleep(0.1)
+            next_message = payload_create(request_info,next_message,stage=self.state)
+
         return pices_hash
 
 def peer_sort_key(peer):
-    return (-peer.throughput, not peer.intrested)
-
+    return (-peer.throughput, not peer.interested)
 class PeerManager:
 
-    def __init__(self,decode_data = None):
+    def __init__(self):
         self.peer = []
-        self.not_connected = []
         self.unchocked_list = []
-        self.decode_data = decode_data
-        self.connected_peers = 0
-        self.connected_peers_list = []
-        #asyncio.create_task(self.keep_alive_loop())
-        self.info_hash = get_info_hash(decode_data[b'info'])
     def add_peer(self, socket_info):
         peer = Peer(socket_info, self)
         self.peer.append(peer)
         asyncio.create_task(peer.start())
-        self.connected_peers += 1
-        self.connected_peers_list.append({"host":socket_info['host'],"port":socket_info['port']})
+
     def remove_peer(self,peer):
         if peer in self.peer:
             try :
                 peer.writer.close()
             except:
-                log(f"error in cloasing peer",level="Error")
-            finally:
-                self.peer.remove(peer)
-                #self.not_connected.append(peer.socket_info)
-                self.connected_peers -= 1
-                self.connected_peers_list.remove({"host":peer.host,"port":peer.port})
-                del peer
+                print(f"error in cloasing peer")
+            self.peer.remove(peer)
 
     async def keep_alive_loop(self):
         while True:
             now = time.time()
             for peer in list(self.peer):
-                log(f"sending keep keep_alive_loop {peer}")
                 if peer.writer and now - peer.last_keepalive > 100:
-                    await peer.send_msg(None)
-                    
-
-
-            # for peer in list(self.not_connected):
-            #     self.add_peer(peer)
-            #     self.not_connected.remove(peer)
+                    await peer.send_message(None)
             await asyncio.sleep(30)
     async def choke(self):
-        while True:
-            for i in list(self.peer):
-                if i.peer_id is None:
-                    self.remove_peer(i)
-            sortes = sorted(self.peer,key = peer_sort_key)
-            global bytes_in,bytes_out
-            
-            print(f"\033[92mDownloaded: {bytes_in/1024:.2f} KB, Uploaded: {bytes_out/1024:.2f} KB\033[0m")
-            top_peers = sortes[:min(len(sortes),len(sortes))]
-            chocked = b"\x00\x00\x00\x01\x00"
-            unchocked = b"\x00\x00\x00\x01\x01"
-            remaining_peers = None
-            if len(sortes) > len(sortes):
-                remaining_peers = sortes[10:]
-                selected_peer = random.choice(remaining_peers)
-                top_peers.append(selected_peer)
-                remaining_peers.remove(selected_peer)
-            self.unchocked_list = top_peers
-            print(f"\033[92mnumber of peer available from choke {len(self.unchocked_list)}\033[0m")
-            for peer in self.peer:
-                if peer not in top_peers:
-                    await peer.send_msg(chocked)
-                else:
-                    await peer.send_msg(unchocked)
-            peer_info = discover_peer(self.decode_data,flag=0)
-            print(f"\033[92mnumber of peer available from tracker {len(peer_info)} {peer_info}\033[0m")
-            for i in peer_info:
-                if {"host":i,"port":peer_info[i]} not in self.connected_peers_list:
-                    socket_info = {
-                        "host" : i,
-                        "port" : peer_info[i],
-                        "num_pieces" : self.decode_data[b'info'][b'piece length'],
-                        "info_hash":self.info_hash,
-                        'peer_id' : self.decode_data[b'peer_id'],
-                        "handshake_type":0
-                    }
-                    self.add_peer(socket_info)
-                    asyncio.sleep(1)
-            
-            await asyncio.sleep(60)
+        sorted = sorted(self.peer,key = peer_sort_key)
 
+        top_peers = sorted[:4]
+        chocked = b"\x00\x00\x00\x01\x00"
+        unchocked = b"\x00\x00\x00\x01\x01"
+        remaining_peers = None
+        if len(sorted) >= 4:
+            remaining_peers = sorted[4:]
+            selected_peer = random.choice(remaining_peers)
+            top_peers.append(selected_peer)
+            remaining_peers.remove(selected_peer)
+        self.unchocked_list = top_peers
+        for peer in self.peer:
+            if peer not in top_peers:
+                await peer.send_message(chocked)
+            else:
+                await peer.send_message(unchocked)
+        await asyncio.sleep(10)
 
-
+        
+    
 class MetadataManger:
 
     def __init__(self,num_pieces):
@@ -771,7 +625,7 @@ class MetadataManger:
     async def add_piece(self,index,data):
         async with self.lock:
             self.pieces[index] = data
-
+    
     async def falied(self,index):
         async with self.lock:
             if self.pieces[index] == b'get':
@@ -780,7 +634,7 @@ class MetadataManger:
     async def is_complete(self):
         async with self.lock:
             return all(v is not None for v in self.pieces.values())
-
+    
     def assemble(self):
         return b''.join(self.pieces[i] for i in range(self.num_pieces))
 
@@ -791,10 +645,6 @@ async def perform_handshke(writer,reader,socket_info,handshake_type = 0):
     protocol_bit = 8*b"\x00"
     if handshake_type == 1:
         protocol_bit = 5*b"\x00" + b"\x10" + 2*b"\x00"
-    #pstrlen + pstr + reserved + info_hash + peer_id
-    print(f"\033[92minfo_hash {type(info_hash)} {len(info_hash)}\033[0m")
-    print(f"\033[92mpeer_id {type(peer_id)} {len(peer_id)}\033[0m")
-    print(f"\033[92mprotocol_bit {type(protocol_bit)} {len(protocol_bit)}\033[0m")
     protocol = b"\x13" + b"BitTorrent protocol" + protocol_bit + info_hash + peer_id
 
     writer.write(protocol)
@@ -804,120 +654,72 @@ async def perform_handshke(writer,reader,socket_info,handshake_type = 0):
     return resp
 
 async def negociate_handshake(writer,reader,socket_info,handshake_type = 0):
-    try :
-        resp = await perform_handshke(writer,reader,socket_info,handshake_type= handshake_type)
-        if len(resp) < 68:
-            return None,None
-
-        
-        decoded_protocol = decode_torrent_protocol(resp)
-        supprt_extention = (decoded_protocol["function_byte"][5] & 0x10)!=0
-        #print(f"responce from the peer {decoded_protocol}")
-        ut_metadata_id = None
-
-        if "send_bitfield" in socket_info:
-            #print(f"Sending bitfield {socket_info['send_bitfield']}")
-            bitfield_payload = b"\x05" + socket_info["send_bitfield"]
-            message_legth = len(bitfield_payload).to_bytes(4,byteorder="big")
-            bitfield_payload = message_legth + bitfield_payload
-            #print(f"bitfield payload {bitfield_payload}")
-            writer.write(bitfield_payload)
-            await writer.drain()
-
-        resp_bitfield = await recv_async(reader,flag=1)
-        #log(f"responce bitfield {resp_bitfield}")
-        if resp_bitfield:
-            resp_bitfield = read_message(resp_bitfield)
-        resp_handshake = None
-        if supprt_extention:
-            log(f"extended handshake")
-            handshake_dict = {b"m":{b"ut_metadata" : 1 ,b"ut_pex" : 1},b"v":b"my_client"}
-            handshake_encoded = bencode(handshake_dict)
-            message_id = b"\x14"
-            payload_send = message_id + b"\x00" + handshake_encoded
-            length = len(payload_send)
-            length_prefix = struct.pack(">I",len(payload_send))
-            payload_send = length_prefix + payload_send
-
-            writer.write(payload_send)
-            await writer.drain()
-
-            resp_handshake = await recv_async(reader,flag=1)
-            if resp_handshake:
-                log(f"responce handshake {resp_handshake}")
-                resp_handshake = read_message(resp_handshake)
-                log(f"responce handshake {resp_handshake}")
-        #print(f"extended handshake {decode_bencode(resp_handshake['payload'])}")
-        log(f"decoded_protocol {len(decoded_protocol)}")
-        
-        if resp_handshake:
-            if resp_bitfield:
-                resp_bitfield["message_id"] = resp_handshake["message_id"]
-                resp_bitfield["payload"] = resp_handshake["payload"]
-
-            else:
-                resp_bitfield = resp_handshake
-        return decoded_protocol,resp_bitfield
-    except Exception as e:
-        log(f"some error is occurred during handshake {e}",level="Error")
-        traceback.print_exc()
+    resp = await perform_handshke(writer,reader,socket_info,handshake_type= handshake_type)
+    if len(resp) < 68:
         return None,None
+    
+    decoded_protocol = decode_torrent_protocol(resp)
+    supprt_extention = (decoded_protocol["function_byte"][5] & 0x10)!=0
+
+    ut_metadata_id = None
+
+    if "send_bitfield" in socket_info:
+        bitfield_payload = b"\x05" + socket_info["send_bitfield"]
+        message_legth = len(bitfield_payload).to_bytes(4,byteorder="big")
+        bitfield_payload = message_legth + bitfield_payload
+        writer.writer(message_legth)
+        await writer.drain()
+
+    resp_bitfield = await recv_async(reader,flag=1)
+    if resp_bitfield:
+        resp_bitfield = read_message(resp_bitfield)
+    resp_handshake = None
+    if supprt_extention:
+        handshake_dict = {b"m":{b"ut_metadata" : 1 }}
+        handshake_encoded = bencode(handshake_dict)
+        message_id = b"\x14"
+        payload_send = message_id + b"\x00" + handshake_encoded
+        length = len(payload_send)
+        length = length.to_bytes(4,"big")
+        payload_send = length + payload_send
+        
+        writer.write(payload_send)
+        await writer.drain()
+
+        resp_handshake = await recv_async(reader)
+
+        resp_handshake = read_message(resp_handshake)
+        #print(f"extended handshake {decode_bencode(resp_handshake['payload'])}")
+
+    if resp_handshake:
+        resp_bitfield["message_id"] = resp_handshake["message_id"]
+        resp_bitfield["payload"] = resp_handshake["payload"]
+
+    return decoded_protocol,resp_bitfield
+
 async def peer_tcp_async(decode_data,piece_manager:PieceManager,peer_manager:PeerManager,data_buffer,handshake_type=0):
     index = None
     request_info = {"begin": 0, "length": 0, "index": 0}
     pices_hash = {}
-
+    
     num_pieces = math.ceil(len(decode_data[b'info'][b'pieces'])/20)
     have_pieces = bytearray(num_pieces*b"\x00")
     state = 0
     try:
         while piece_manager.get_size() > 0:
             task = []
-            requested_index = []
-            loop_in_coro = asyncio.get_running_loop()
-            print(f"\033[92mnumber of peer available {len(peer_manager.unchocked_list)} {peer_manager.connected_peers}\033[0m")
-            #log(f"current Event Loop ID inside coroutine: {id(loop_in_coro)}")
             for peer in peer_manager.unchocked_list:
-                index = await piece_manager.get_piece_for_peer(peer.have_pieces)
-                if index is None:
-                    print(f"\033[91mthis peer does not have that piece {peer} {index}\033[0m")
-                    continue
-                requested_index.append(index)
-                print(f"\033[92mgetting piece {peer} {index}\033[0m")
-                task.append(asyncio.wait_for(peer.request_piece(decode_data,index),timeout=60))
-
-            result = await asyncio.gather(*task,return_exceptions=True)
-            #log(f"result was printed {len(result)}")
-            for res in result:
-                if isinstance(res, asyncio.TimeoutError):
-                    log("One peer timed out after 15s")
-                    continue
-                elif isinstance(res, Exception):
-                    log(f"Peer failed with error: {res}")
-                    continue
-                elif res is None:
-                    continue
-
-                for piece_index, piece_data in res.items():
-                    if piece_index not in data_buffer:
-                        data_buffer[piece_index] = piece_data
-                    else:
-                        data_buffer[piece_index] += piece_data  
-            for idx in requested_index:
-                if idx in data_buffer:
-                    hash_index = decode_data[b'info'][b'pieces'][20*idx : 20*(idx+1)]
-                    if hash_comp(data_buffer[idx], hash_index) == 0:
-                        await piece_manager.mark_failed(idx)
-                else:
-                    await piece_manager.mark_failed(idx)
-
-            await asyncio.sleep(0)
-            #log(f"result for the peers {result}")
+                print(peer) 
+                index = piece_manager.get_piece_for_peer(peer.have_pieces)
+                task.append(asyncio.create_task(peer.request_piece(decode_data,index)))
+            
+            result = await asyncio.gather(*task)
+            await asyncio.sleep(10)
+            #print(f"result for the peers {result}")
         return pices_hash
 
     except Exception as e:
-        log(f"{index} -> {e}",level="Error")
-        traceback.print_exc()
+        print(f"{index} -> {e}")
         if index:
             await piece_manager.mark_failed(index)
         return None
@@ -926,27 +728,24 @@ async def get_meta_data(writer,reader,meta_id:int,messaghe_info,meta_manager:Met
 
     while True:
         piece_index = await meta_manager.get_next_missing()
-        log(f"index {piece_index} {host} {port} {meta_id}")
+        print(f"index {piece_index} {host} {port}")
         if piece_index is None:
             break
         messaghe_info[b'piece'] = piece_index
-
+        
         encoded_message = bencode(messaghe_info)
-        print(f"encoded message {encoded_message}")
         payload = b"\x14" + meta_id.to_bytes(1,"big") + encoded_message
         payload = len(payload).to_bytes(4,byteorder="big") + payload
-        meta_data = None
+        meta_data = None 
         if messaghe_info[b'msg_type'] == 0:
-            log(f"requesting meta data {payload}")
             writer.write(payload)
             await writer.drain()
-
+        
             resp = await recv_async(reader)
-            log(f"responce from the peer {resp}")
             resp =read_message(resp)
-            
+        
             other_info,meta_data = decode_metadata(resp['payload'])
-
+                
         if meta_data is None:
             await meta_manager.falied(piece_index)
         else:
@@ -954,14 +753,12 @@ async def get_meta_data(writer,reader,meta_id:int,messaghe_info,meta_manager:Met
 
 async def meta_info_downloader(peer_info,socket_info):
     meta_manager = None
+
     async def download(host,port):
         nonlocal meta_manager
         reader,writer = await asyncio.open_connection(host=host,port=port)
         peer_info_new,bitfield = await negociate_handshake(writer,reader,socket_info,handshake_type=1)
-        if bitfield['payload'] is None:
-            return
         decode_meta_info ,_ = decode_bencode(bitfield['payload'])
-        print(f"decode_meta_info {decode_meta_info}" )
         meta_id = decode_meta_info[b'm'][b'ut_metadata']
         meta_data_size = decode_meta_info[b'metadata_size']
         message_info = {
@@ -987,22 +784,24 @@ async def meta_info_downloader(peer_info,socket_info):
         task.append(asyncio.create_task(download(i,peer_info[i])))
 
     await asyncio.gather(*task)
-
+    
     if meta_manager:
         decoded_meta_data,_ = decode_bencode(meta_manager.assemble())
         calculated_info_hash= get_info_hash(decoded_meta_data)
         if calculated_info_hash == socket_info['info_hash']:
-            log(decoded_meta_data)
+            print(decoded_meta_data)
             return decoded_meta_data
         else:
-            log(f"it dose not matched ")
+            print(f"it dose not matched ")
             return None
+
+
+    
+
 async def download_whole_file_async(peer_info, decode_data,index = None,handshake_type = 0):
-    start_time = time.time()
-    print(decode_data.keys())
     num_pieces = math.ceil(len(decode_data[b'info'][b'pieces']) / 20)
     info_hash = get_info_hash(decode_data[b'info'])
-    current_have = bytearray(math.ceil(num_pieces/8) * b'\x00')
+    current_have = bytearray(num_pieces * b'\x00')
     data_buffer = {}
     socket_info = {
             "info_hash" : info_hash,
@@ -1011,34 +810,25 @@ async def download_whole_file_async(peer_info, decode_data,index = None,handshak
     piece_manager = PieceManager(num_pieces)
     if index is not None:
         piece_manager = PieceManager([index])
-    peer_manager = PeerManager(decode_data = decode_data)
+    peer_manager = PeerManager()
     task = []
-    print(f"peer Info :\n {peer_info} {len(peer_info)}")
-    print(30*"\n")
-    log(f"num_pieces {num_pieces}")
+    #print(f"peer Info :\n {peer_info}")
+    print(f"num_pieces {num_pieces}")
     for i in peer_info:
-        print(f"\033[93madding peer {i} {peer_info[i]} {info_hash}\033[0m")
         socket_info = {
             "host" : i,
             "port" : peer_info[i],
             "num_pieces" : num_pieces,
             "info_hash":info_hash,
-            'peer_id' : decode_data[b'peer_id'],
-            "handshake_type":handshake_type,
-            "send_bitfield":current_have
+            'peer_id' : decode_data[b'peer_id']
         }
         peer_manager.add_peer(socket_info)
         await asyncio.sleep(1)
-        # if isinstance(index,int):
-        #     break
-    
-    asyncio.create_task(peer_manager.choke())
-    await asyncio.sleep(10)
     result = await peer_tcp_async(decode_data,piece_manager,peer_manager,data_buffer)
 
         #result = await peer_tcp_async(socket_info,decode_data,piece_manager,data_buffer)
-    complet_time = - start_time + time.time()
-    log(f"got result {complet_time}")
+    if result:
+        print(f"got result")
 
     return data_buffer
 
@@ -1055,40 +845,6 @@ def get_decode_style(magnet_link,info_hash):
     bencoded_value[b'announce'] = urllib.parse.unquote(magnet_link).encode("latin-1")
     bencoded_value[b'peer_id'] = os.urandom(20)
     return bencoded_value
-
-def parse_ip_port(address_string: str) -> tuple[str, int]:
-    """
-    Parses a string containing an IP address and port for both IPv4 and IPv6.
-
-    Args:
-        address_string: The string to parse (e.g., "192.168.1.1:8080"
-                        or "[2a10:e780:11:1::6d]:51413").
-
-    Returns:
-        A tuple containing the IP address (str) and the port (int).
-
-    Raises:
-        ValueError: If the string format is invalid.
-    """
-    # Check if it's an IPv6 address enclosed in brackets
-    if address_string.startswith('[') and ']:' in address_string:
-        last_bracket_index = address_string.rfind(']')
-        ip_addr = address_string[1:last_bracket_index]
-        port_str = address_string[last_bracket_index+2:]
-    # Otherwise, assume it's IPv4 or a plain IPv6 without bracketsf
-    else:
-        # rsplit splits from the right, ensuring we only split on the last colon
-        parts = address_string.rsplit(':', 1)
-        if len(parts) != 2:
-            raise ValueError(f"Invalid address format: {address_string}")
-        ip_addr, port_str = parts
-
-    try:
-        port = int(port_str)
-        return ip_addr, port
-    except ValueError:
-        raise ValueError(f"Invalid port number in address: {address_string}")
-
 def main():
 
     # print([[] , [] , []])
@@ -1122,7 +878,7 @@ def main():
             sys.exit(1)
         torrent_file_path = sys.argv[2]
         read_torrent(torrent_file_path)
-
+        
     elif command == "peers":
         if len(sys.argv) < 3:
             print("Usage: python main.py info <torrent_file_path>", file=sys.stderr)
@@ -1134,8 +890,7 @@ def main():
     elif command == "handshake":
         torrent_file_path = sys.argv[2]
         ip_port = sys.argv[3]
-        ip_addr,port = parse_ip_port(ip_port)
-        print(ip_addr,port)
+        ip_addr,port = ip_port.split(":")
         decode_data = read_torrent(torrent_file_path,print_flag=0)
         info_hash = get_info_hash(decode_data[b'info'])
         port = int(port)
@@ -1144,7 +899,7 @@ def main():
         socket_info["host"] = ip_addr
         socket_info["peer_id"] = decode_data[b'peer_id']
         socket_info["info_hash"] = info_hash
-
+        
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -1152,7 +907,6 @@ def main():
         resp = loop.run_until_complete(perform_handshke(writer, reader, socket_info))
         loop.close()
         peer_info = decode_torrent_protocol(resp)
-        print(peer_info)
         print(f"Peer ID: {peer_info["peer_id"].hex()}")
     elif command == "download_piece":
         output_file = ""
@@ -1239,7 +993,7 @@ def main():
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-
+        
         decoded_metadata = loop.run_until_complete(meta_info_downloader(peer_info,socket_info))
         print(f"Tracker URL: {urllib.parse.unquote(url)}")
         print(f"Length: {decoded_metadata[b'length']}")
@@ -1264,7 +1018,7 @@ def main():
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-
+        
         decoded_metadata = loop.run_until_complete(meta_info_downloader(peer_info,socket_info))
         print(f"Tracker URL: {urllib.parse.unquote(url)}")
         print(f"Length: {decoded_metadata[b'length']}")
@@ -1273,9 +1027,9 @@ def main():
         print(f"Piece Hashes:")
         for i in range(0,len(decoded_metadata[b'pieces']),20):
             print(f"{decoded_metadata[b'pieces'][i:i+20].hex()}")
-
+        
         bencoded_value[b'info'] = decoded_metadata
-
+        
         pices_data = loop.run_until_complete(download_whole_file_async(peer_info,bencoded_value,index = piece_nr,handshake_type=1))
         loop.close()
 
@@ -1297,7 +1051,7 @@ def main():
 
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-
+        
         decoded_metadata = loop.run_until_complete(meta_info_downloader(peer_info,socket_info))
         print(f"Tracker URL: {urllib.parse.unquote(url)}")
         print(f"Length: {decoded_metadata[b'length']}")
@@ -1306,9 +1060,9 @@ def main():
         print(f"Piece Hashes:")
         for i in range(0,len(decoded_metadata[b'pieces']),20):
             print(f"{decoded_metadata[b'pieces'][i:i+20].hex()}")
-
+        
         bencoded_value[b'info'] = decoded_metadata
-
+        
         result = loop.run_until_complete(download_whole_file_async(peer_info,bencoded_value,handshake_type=1))
         loop.close()
 
@@ -1317,40 +1071,10 @@ def main():
                 for i in sorted(result.keys()):
                     print(f"piece {i}")
                     f.write(result[i])
-    elif command == "nhandshake":
-        torrent_file_path = sys.argv[2]
-        ip_port = sys.argv[3]
-        ip_addr,port = parse_ip_port(ip_port)
-        print(ip_addr,port)
-        decode_data = read_torrent(torrent_file_path,print_flag=0)
-        info_hash = get_info_hash(decode_data[b'info'])
-        port = int(port)
-        num_pieces = math.ceil(decode_data[b'info'][b'length']/(8*decode_data[b'info'][b'piece length']))
-        print(f"num_pieces {num_pieces}")
-        current_have = bytearray(num_pieces*b'\x00')
-        socket_info = {}
-        socket_info["port"] = port
-        socket_info["host"] = ip_addr
-        socket_info["peer_id"] = decode_data[b'peer_id']
-        socket_info["info_hash"] = info_hash
-        socket_info["send_bitfield"] = current_have
-
-
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        reader, writer = loop.run_until_complete(asyncio.open_connection(ip_addr, port))
-        resp = loop.run_until_complete(negociate_handshake(writer, reader, socket_info,handshake_type=0))
-        loop.close()
-        # peer_info = decode_torrent_protocol(resp)
-        #print(resp)
-        #print(f"Peer ID: {peer_info["peer_id"].hex()}")
-    else:
+    else: 
         raise NotImplementedError(f"Unknown command {command}")
 
 
 
 if __name__ == "__main__":
-    start_time = time.time()
     main()
-    total_time = time.time() - start_time
-    print(f"total_time  {total_time}")
