@@ -42,8 +42,8 @@ def log(*args, level="INFO", **kwargs):
 
     # Format log message
     prefix = f"[{caller_func}|{line_no}]"
-    if level == "Status" or level == "Error" or level == "Warning":#or level == "INFO":
-        print(prefix, "-", *args, **kwargs)
+    # if level == "Status" or level == "Error" or level == "Warning": #or level == "INFO":
+    #     #print(prefix, "-", *args, **kwargs)
     #print(prefix, "-", *args, **kwargs)
 # Examples:
 #
@@ -259,11 +259,15 @@ def discover_peer(bedecoded_value,flag = 1,torrent = 0):
 
         return return_peer_ip
     except Exception as e:
-        traceback.print_exc()
+        # capture the full traceback as a string
+        trace_str = traceback.format_exc()
+
+        # store it in a local variable
+        last_traceback = trace_str
         raise ValueError(f"{e}")
 
 def decode_torrent_protocol(data):
-    print(f"decode_torrent_protocol {data}")
+   # print(f"decode_torrent_protocol {data}")
     length = int.from_bytes(data[0:1])
     bit_string = str(data[1:20],encoding="latin-1")
     function_byte = data[20:28]
@@ -306,7 +310,7 @@ def hash_comp(data,hash):
 
 def decode_metadata(data):
     
-    print(f"\033[92mdecode_metadata {data}\033[0m")
+    #print(f"\033[92mdecode_metadata {data}\033[0m")
     if data is None:
         return None,None
     decode_data,index = decode_bencode(data)
@@ -351,6 +355,7 @@ def read_message(message):
         # print(f"\033[92mextended message {payload}\033[0m")
         message_return["message_id"] = int.from_bytes(payload[0:1])
         message_return["payload"] = payload[1:]
+        
 
 
     #Now send Intrested message
@@ -381,7 +386,6 @@ def is_bit_set(bytearray_data, bit_index):
     return (bytearray_data[byte_index] & (1 << (7 - bit_position))) != 0
 async def recv_async(reader,flag = 0):
     # Read 4-byte length prefix
-    global bytes_in
     if flag == 0:
         log(f"trying to read _buffer {len(reader._buffer)} {reader.at_eof()}")
         length_bytes = await reader.readexactly(4)
@@ -400,7 +404,6 @@ async def recv_async(reader,flag = 0):
             raise ConnectionError("Connection closed before receiving length")
 
         log(f"returens the readed message bytes")
-        bytes_in += len(length_bytes) + len(message)
         return length_bytes + message
 
     if flag == 1:
@@ -417,7 +420,6 @@ async def recv_async(reader,flag = 0):
 
         message = await reader.readexactly(length)
         log(f"returens the readed message bytes")
-        bytes_in += len(length_bytes) + len(message)
         return length_bytes + message
 
 class PieceManager:
@@ -468,8 +470,9 @@ class Peer:
         self.writer_lock =asyncio.Lock()
         self.reader_lock = asyncio.Lock()
         self.chocke = asyncio.Event()
-
+        self.block_queues: dict[int, asyncio.Queue] = defaultdict(asyncio.Queue)
         log(f"object is created {self.__repr__()}")
+        self.can_process = 3
         # state = 0 : intial state
         # state = 1 : ready to send intrested message
         # state = 2 : unchocked and ready to send piece request
@@ -481,17 +484,22 @@ class Peer:
             await self._setup()
             log(f"Peer._setup() completed for {self.host}:{self.port}")
         except Exception as e:
-            log(f"Error in Peer.start() for {self.host}:{self.port}: {e}",level="Error")
+            trace_str = traceback.format_exc()
+
+            # store it in a local variable
+            last_traceback = trace_str
+            log(f"Error in Peer.start() for {self.host}:{self.port}: {last_traceback}",level="Error")
             self.manager.remove_peer(self)
-            traceback.print_exc()
+            # traceback.print_exc()
     def __repr__(self) -> str:
         return f"host : {self.host} port : {self.port} peer_id : {self.peer_id} {self.state}"
     async def _setup(self):
         try:
 
             log(f"shake is ongoing {self.__repr__()}")
-            self.reader , self.writer = await asyncio.open_connection(self.host,self.port)
-
+            self.reader , self.writer = await asyncio.wait_for(
+            asyncio.open_connection(self.host, self.port),
+            timeout=60)
             if self.reader is None or self.writer is None:
                 self.manager.remove_peer(self)
                 log(f"{self.__repr__()} peer have zero writer and zero reader")
@@ -521,9 +529,11 @@ class Peer:
             log(f"shake is succssfull {self.__repr__()}")
         except Exception as e:
             self.manager.remove_peer(self)
-            log(f"Failed To cnnect -> {self.host} {self.port} {e}",level="Error")
+            trace_str = traceback.format_exc()
 
-            traceback.print_exc()
+            # store it in a local variable
+            last_traceback = trace_str
+            log(f"[{self.__repr__()}]Failed To cnnect -> {self.host} {self.port} {last_traceback}",level="Error")
 
     async def reader_loop(self):
 
@@ -547,7 +557,7 @@ class Peer:
 
 
                 message = read_message(raw_msg)
-
+                print(f"\033[94mmessage received {message['message_type']} {self.__repr__()}\033[0m")
                 if message['stop'] == 1 or self.state == 3:
                     if message['stop'] == 0:
                         self.state = 2
@@ -559,8 +569,11 @@ class Peer:
                     self.state = 2
                     self.chocke.set()
                 if message['message_type'] == 7:
+                    #print(f"\033[92mdata message received {self.__repr__()} {message['piece_index']} {message['begin_index']}\033[0m")
                     piece_key = (message['piece_index'],int.from_bytes(message['begin_index']))
-                    self.data_map[piece_key] = message['data']
+                    if message['piece_index'] in self.block_queues:
+                        self.data_map[piece_key] = message['data']
+                        self.block_queues[message['piece_index']].put_nowait(piece_key)
                     if piece_key in self.piece_event:
                         event = self.piece_event.pop(piece_key) # Pop to clean up
                         event.set() #
@@ -571,19 +584,26 @@ class Peer:
                     self.have_pieces = bytearray(message['have_pices'])
                 if message['message_type'] == 20:
                     payload = decode_bencode(message['payload'])
-                    print(f"{30*'='}")
-                    print(f"\n\n\n")
-                    print(f"\033[92mextended message received {payload}\033[0m")
-                    print(f"\n\n\n")
-                    print(f"{30*'='}")
-                    print(f"\n\n\n")
+                    if message['message_id'] == 2:
+                        self.manager.add_peer_pex(message['payload'])
+                    # print(f"{30*'='}")
+                    # print(f"\n\n\n")
+                    # print(f"\033[92mextended message received {message['message_id']} \033[0m")
+                    # print(f"\033[92mextended message received {payload} \033[0m")
+                    # print(f"\n\n\n")
+                    # print(f"{30*'='}")
+                    # print(f"\n\n\n")
                 log(f"[Peer {self.host}:{self.port} {self.state}] Downloaded {bytes_received} bytes in "
                 f"{elapsed:.2f} sec → Throughput: {self.throughput/1024:.2f} {message['begin_index']} {message['piece_index']} KB/s")
-                await asyncio.sleep(0.1)
+                # await asyncio.sleep(0.1)
             except Exception as e:
-                log(f"peer {self} disconnected {e}")
                 self.manager.remove_peer(self)
-                traceback.print_exc()
+                trace_str = traceback.format_exc()
+
+                # store it in a local variable
+                last_traceback = trace_str
+                log(f"peer {self} disconnected {last_traceback}",level="Error")
+                self.manager.remove_peer(self)
                 break
 
             await asyncio.sleep(0.1)
@@ -592,6 +612,7 @@ class Peer:
         global bytes_out
         if payload is None:  # keepalive
             payload = (0).to_bytes(4, "big")
+            
         try:
         # Lock was acquired
             async with self.writer_lock:
@@ -599,22 +620,26 @@ class Peer:
                 self.writer.write(payload)
                 await self.writer.drain()
                 bytes_out += len(payload)
+                return 1
         except Exception as e:
-            log(f"an Exception is occurred {e}",level="Error")
+            trace_str = traceback.format_exc()
+            last_traceback = trace_str
+            log(f"[{self}] an Exception is occurred {last_traceback}",level="Error")
             self.manager.remove_peer(self)
+            return 0
 
-            traceback.print_exc()
-
-    async def request_piece(self,decoded_data,index):
+    async def request_piece(self,decoded_data,index,parallel = 1):
+        self.can_process = self.can_process - 1
+        # self.block_queue = asyncio.Queue()
         pices_hash = {}
         num_pieces = math.ceil(len(decoded_data[b'info'][b'pieces'])/20)
         piece_length = decoded_data[b'info'][b'piece length']
         total_length_file = decoded_data[b'info'][b'length']
-
+        
         total_length = piece_length
         if index == num_pieces - 1:
             total_length = total_length_file % piece_length
-
+        byte_message = bytearray(total_length*b"\x00")
         request_info = {"begin": 0, "length": 0, "index": 0}
         request_info["length"] = min(16*1024, total_length)  # 16KB blocks
         request_info['index'] = index
@@ -627,40 +652,96 @@ class Peer:
             await self.send_msg(next_message['payload'])
 
         next_message = payload_create(request_info,next_message,self.state)
+        request_piece = []
+        try:
+            while total_length>0:
+                print(f"\033[93mrequest_piece FOR: {request_piece} {total_length}\033[0m")
+                while len(request_piece) < parallel and total_length > 0:
+                    temp_request_info = request_info.copy()
+                    log(f"[{self.__repr__()}]waiting for being unchocked")
+                    if self.state == 3 or self.state == 1:
+                        await self.chocke.wait()
+                    #await asyncio.sleep(0.1)
+                    log(f"inside while loop {temp_request_info}")
+                    next_message = payload_create(temp_request_info,next_message,self.state)
+                    await self.send_msg(next_message['payload'])
+                    log(f"the payload is written {next_message['payload']}")
+                    piece_key = (index,temp_request_info['begin'])
+                    request_piece.append(piece_key)
+                    #print(f"\033[96m [{self}] requested piece {piece_key} total length remaining {total_length}\033[0m")
+                    # if piece_key not in self.data_map:
+                    #     if piece_key not in self.piece_event:
+                    #         self.piece_event[piece_key] = asyncio.Event()
+                    #     event = self.piece_event[piece_key]
+                    #     log(f"Payload sent, now waiting for piece: {piece_key}")
+                    #     await event.wait()
+                    #     log(f"Event received! Data has arrived for piece: {piece_key}")
+                    print(f"\033[93m [{self.__repr__()}]request_piece Inside: {request_piece} {total_length} {self.block_queues} {request_info}\033[0m")
+                    request_info['begin'] += min(16*1024, total_length)
+                    total_length -= min(16*1024, total_length)
+                    request_info['length'] = min(16*1024, total_length)
+                    await asyncio.sleep(0.2)
+                    
+                    
+                    
+                for piece_key in list(request_piece):
+                    try:
+                        if index not in self.block_queues:
+                            self.block_queues[index] = asyncio.Queue()
 
-        while total_length>0:
-
-            log(f"[{self.__repr__()}]waiting for being unchocked")
-            if self.state == 3 or self.state == 1:
-                await self.chocke.wait()
-            #await asyncio.sleep(0.1)
-            log(f"inside while loop {request_info}")
-            next_message = payload_create(request_info,next_message,self.state)
-            await self.send_msg(next_message['payload'])
-            log(f"the payload is written {next_message['payload']}")
-            piece_key = (index,request_info['begin'])
-
-
-            if piece_key not in self.data_map:
-                if piece_key not in self.piece_event:
-                    self.piece_event[piece_key] = asyncio.Event()
-                event = self.piece_event[piece_key]
-                log(f"Payload sent, now waiting for piece: {piece_key}")
-                await event.wait()
-                log(f"Event received! Data has arrived for piece: {piece_key}")
-
-
-            data = self.data_map[(index,request_info['begin'])]
-            if index in pices_hash:
-                pices_hash[index] += data
-            else:
-                pices_hash[index] = data
-
-            request_info['begin'] += len(data)
-            total_length -= len(data)
-            request_info['length'] = min(16*1024, total_length)
-            await asyncio.sleep(0.1)
-        return pices_hash
+                        piece_key_request = await asyncio.wait_for(self.block_queues[index].get(), timeout=30)
+                        data = self.data_map.pop(piece_key_request)
+                        _,begin = piece_key_request
+                        byte_message[begin:begin+len(data)] = data
+                        request_piece.remove(piece_key_request)
+                    except Exception as e:
+                        # self.manager.remove_peer(self)
+                        if index in self.block_queues:
+                            del self.block_queues[index]
+                        traceback.print_exc()
+                        trace_str = traceback.format_exc()
+                        last_traceback = trace_str
+                        self.can_process = self.can_process + 1
+                        log(f"[{self.__repr__()}] {last_traceback}",level="Error")
+                        return None
+                        
+            print(f"\033[93mrequest_piece outside: {request_piece} {total_length}\033[0m")
+            for piece_key in list(request_piece):
+                try:
+                    if index not in self.block_queues:
+                        self.block_queues[index] = asyncio.Queue()
+                    piece_key_request = await asyncio.wait_for(self.block_queues[index].get(), timeout=30)
+                    data = self.data_map.pop(piece_key_request)
+                    _,begin = piece_key_request
+                    byte_message[begin:begin+len(data)] = data
+                    request_piece.remove(piece_key_request)
+                except Exception as e:
+                    traceback.print_exc()
+                    trace_str = traceback.format_exc()
+                    last_traceback = trace_str
+                    if index in self.block_queues:
+                        del self.block_queues[index]
+                    self.can_process = self.can_process + 1
+                    log(f"[{self.__repr__()}] {last_traceback}",level="Error")
+                    return None
+                
+            if index not in pices_hash:
+                pices_hash[index] = b""
+                pices_hash[index] += byte_message
+                if index in self.block_queues:
+                    del self.block_queues[index]
+            print(f"\033[92mcompleted downloading the piece {index} from peer {self.__repr__()}\033[0m")
+            self.can_process = self.can_process + 1
+            return pices_hash
+        except Exception as e:
+            traceback.print_exc()
+            trace_str = traceback.format_exc()
+            last_traceback = trace_str
+            if index in self.block_queues:
+                del self.block_queues[index]
+            self.can_process = self.can_process + 1
+            log(f"[{self.__repr__()}] {last_traceback}",level="Error")
+            return None
 
 def peer_sort_key(peer):
     return (-peer.throughput, not peer.intrested)
@@ -674,8 +755,27 @@ class PeerManager:
         self.decode_data = decode_data
         self.connected_peers = 0
         self.connected_peers_list = []
+        self.seeder = 0
+        self.leacher = 0
+        self.num_pieces = math.ceil(len(decode_data[b'info'][b'pieces']) / 20)
         #asyncio.create_task(self.keep_alive_loop())
         self.info_hash = get_info_hash(decode_data[b'info'])
+    def add_peer_pex(self,payload):
+        peer_info,_ = decode_bencode(payload)
+        if b'added' in peer_info:
+            for i in range(0,len(peer_info[b'added']),6):
+                ip_byte = peer_info[b'added'][i:i+4]
+                port_byte = peer_info[b'added'][i+4:i+6]
+                ip_addr = socket.inet_ntoa(ip_byte)
+                port = int.from_bytes(port_byte,"big")
+                #print(f"\033[94madded {ip_addr}:{port}\033[0m")
+                if b'added.f' in peer_info:
+                    if peer_info[b'added.f'][i//6]&0x02:
+                        self.seeder += 1   
+                    else:
+                        self.leacher += 1
+                self.not_connected.append({"host":ip_addr,"port":port})
+
     def add_peer(self, socket_info):
         peer = Peer(socket_info, self)
         self.peer.append(peer)
@@ -684,12 +784,19 @@ class PeerManager:
         self.connected_peers_list.append({"host":socket_info['host'],"port":socket_info['port']})
     def remove_peer(self,peer):
         if peer in self.peer:
+            print(f"\033[97mremoving peer {peer}\033[0m")
             try :
                 peer.writer.close()
             except:
-                log(f"error in cloasing peer",level="Error")
+                trace_str = traceback.format_exc()
+                last_traceback = trace_str
+                log(f"[{peer.__repr__()}] error in cloasing peer {last_traceback}",level="Error")
             finally:
+                #print(f"\033[97mremoving peer {peer}\033[0m")
                 self.peer.remove(peer)
+                if self.unchocked_list:
+                    if peer in self.unchocked_list:
+                        self.unchocked_list.remove(peer)
                 #self.not_connected.append(peer.socket_info)
                 self.connected_peers -= 1
                 self.connected_peers_list.remove({"host":peer.host,"port":peer.port})
@@ -702,22 +809,30 @@ class PeerManager:
                 log(f"sending keep keep_alive_loop {peer}")
                 if peer.writer and now - peer.last_keepalive > 100:
                     await peer.send_msg(None)
-                    
+    
+    async def chek_alive(self,peer):
+        if peer.writer is None:
+            self.remove_peer(peer)
+        try:
+            res = await peer.send_msg()
+            return res
+        except Exception as e:
+            self.remove_peer(peer)
+            trace_str = traceback.format_exc()
+            last_traceback = trace_str
+            log(f"[{peer.__repr__()}] error in cheking alive {last_traceback}",level="Error")
+            return 0
 
-
-            # for peer in list(self.not_connected):
-            #     self.add_peer(peer)
-            #     self.not_connected.remove(peer)
-            await asyncio.sleep(30)
     async def choke(self):
         while True:
+            print(f"\033[94mchoke loop started {self.connected_peers_list}\033[0m")
             for i in list(self.peer):
                 if i.peer_id is None:
                     self.remove_peer(i)
             sortes = sorted(self.peer,key = peer_sort_key)
             global bytes_in,bytes_out
             
-            print(f"\033[92mDownloaded: {bytes_in/1024:.2f} KB, Uploaded: {bytes_out/1024:.2f} KB\033[0m")
+            print(f"\033[92mDownloaded: {bytes_in/1024:.2f} KB, Uploaded: {bytes_out/1024:.2f} KB Leacher: {self.leacher} Seeder: {self.seeder}\033[0m ")
             top_peers = sortes[:min(len(sortes),len(sortes))]
             chocked = b"\x00\x00\x00\x01\x00"
             unchocked = b"\x00\x00\x00\x01\x01"
@@ -734,22 +849,23 @@ class PeerManager:
                     await peer.send_msg(chocked)
                 else:
                     await peer.send_msg(unchocked)
-            peer_info = discover_peer(self.decode_data,flag=0)
-            print(f"\033[92mnumber of peer available from tracker {len(peer_info)} {peer_info}\033[0m")
-            for i in peer_info:
-                if {"host":i,"port":peer_info[i]} not in self.connected_peers_list:
-                    socket_info = {
-                        "host" : i,
-                        "port" : peer_info[i],
-                        "num_pieces" : self.decode_data[b'info'][b'piece length'],
-                        "info_hash":self.info_hash,
-                        'peer_id' : self.decode_data[b'peer_id'],
-                        "handshake_type":0
-                    }
-                    self.add_peer(socket_info)
-                    asyncio.sleep(1)
-            
-            await asyncio.sleep(60)
+            if len(self.peer) < 50:
+                for i in list(self.not_connected):
+                    if len(self.peer) < 50:
+                        print(f"\033[95madding peer {self.connected_peers} {i['host']}:{i['port']}\033[0m")
+                        if i not in self.connected_peers_list:
+                            socket_info = {
+                                "host" : i['host'],
+                                "port" : i['port'],
+                                "num_pieces" : self.num_pieces,
+                                "info_hash":self.info_hash,
+                                'peer_id' : self.decode_data[b'peer_id'],
+                                "handshake_type":0
+                            }
+                            self.add_peer(socket_info)
+                            self.not_connected.remove(i)
+                            # await asyncio.sleep(1)
+            await asyncio.sleep(10)
 
 
 
@@ -790,11 +906,11 @@ async def perform_handshke(writer,reader,socket_info,handshake_type = 0):
     peer_id = socket_info["peer_id"]
     protocol_bit = 8*b"\x00"
     if handshake_type == 1:
-        protocol_bit = 5*b"\x00" + b"\x10" + 2*b"\x00"
+        protocol_bit = 5*b"\x00" + b"\x10" + b"\x00" + b"\x04"
     #pstrlen + pstr + reserved + info_hash + peer_id
-    print(f"\033[92minfo_hash {type(info_hash)} {len(info_hash)}\033[0m")
-    print(f"\033[92mpeer_id {type(peer_id)} {len(peer_id)}\033[0m")
-    print(f"\033[92mprotocol_bit {type(protocol_bit)} {len(protocol_bit)}\033[0m")
+    # print(f"\033[92minfo_hash {type(info_hash)} {len(info_hash)}\033[0m")
+    # print(f"\033[92mpeer_id {type(peer_id)} {len(peer_id)}\033[0m")
+    # print(f"\033[92mprotocol_bit {type(protocol_bit)} {len(protocol_bit)}\033[0m")
     protocol = b"\x13" + b"BitTorrent protocol" + protocol_bit + info_hash + peer_id
 
     writer.write(protocol)
@@ -831,7 +947,7 @@ async def negociate_handshake(writer,reader,socket_info,handshake_type = 0):
         resp_handshake = None
         if supprt_extention:
             log(f"extended handshake")
-            handshake_dict = {b"m":{b"ut_metadata" : 1 ,b"ut_pex" : 1},b"v":b"my_client"}
+            handshake_dict = {b"m":{b"ut_metadata" : 1 ,b"ut_pex" : 2},b"v":b"my_client"}
             handshake_encoded = bencode(handshake_dict)
             message_id = b"\x14"
             payload_send = message_id + b"\x00" + handshake_encoded
@@ -859,68 +975,111 @@ async def negociate_handshake(writer,reader,socket_info,handshake_type = 0):
                 resp_bitfield = resp_handshake
         return decoded_protocol,resp_bitfield
     except Exception as e:
-        log(f"some error is occurred during handshake {e}",level="Error")
-        traceback.print_exc()
+        trace_str = traceback.format_exc()
+
+        # store it in a local variable
+        last_traceback = trace_str
+        log(f"some error is occurred during handshake {last_traceback}",level="Error")
         return None,None
-async def peer_tcp_async(decode_data,piece_manager:PieceManager,peer_manager:PeerManager,data_buffer,handshake_type=0):
-    index = None
-    request_info = {"begin": 0, "length": 0, "index": 0}
-    pices_hash = {}
 
-    num_pieces = math.ceil(len(decode_data[b'info'][b'pieces'])/20)
-    have_pieces = bytearray(num_pieces*b"\x00")
-    state = 0
-    try:
-        while piece_manager.get_size() > 0:
-            task = []
-            requested_index = []
-            loop_in_coro = asyncio.get_running_loop()
-            print(f"\033[92mnumber of peer available {len(peer_manager.unchocked_list)} {peer_manager.connected_peers}\033[0m")
-            #log(f"current Event Loop ID inside coroutine: {id(loop_in_coro)}")
-            for peer in peer_manager.unchocked_list:
-                index = await piece_manager.get_piece_for_peer(peer.have_pieces)
-                if index is None:
-                    print(f"\033[91mthis peer does not have that piece {peer} {index}\033[0m")
-                    continue
-                requested_index.append(index)
-                print(f"\033[92mgetting piece {peer} {index}\033[0m")
-                task.append(asyncio.wait_for(peer.request_piece(decode_data,index),timeout=60))
+MAX_QUEUE = 100
+BLOCK_TIMEOUT = 120  # seconds
 
-            result = await asyncio.gather(*task,return_exceptions=True)
-            #log(f"result was printed {len(result)}")
-            for res in result:
-                if isinstance(res, asyncio.TimeoutError):
-                    log("One peer timed out after 15s")
-                    continue
-                elif isinstance(res, Exception):
-                    log(f"Peer failed with error: {res}")
-                    continue
-                elif res is None:
-                    continue
+async def worker(name, queue, peer_manager, piece_manager, decode_data, data_buffer):
+    global bytes_in,bytes_out
+    while True:
+        peer, index = await queue.get()   # <- consumes one request
+        try:
+            res = await asyncio.wait_for(peer.request_piece(decode_data, index, parallel=3),
+                                         timeout=BLOCK_TIMEOUT)
 
+            if res is None:
+                print(f"[{name}] Peer {peer} returned None")
+                # peer_manager.remove_peer(peer)
+                await piece_manager.mark_failed(index)
+            else:
                 for piece_index, piece_data in res.items():
                     if piece_index not in data_buffer:
                         data_buffer[piece_index] = piece_data
                     else:
                         data_buffer[piece_index] += piece_data  
-            for idx in requested_index:
-                if idx in data_buffer:
-                    hash_index = decode_data[b'info'][b'pieces'][20*idx : 20*(idx+1)]
-                    if hash_comp(data_buffer[idx], hash_index) == 0:
-                        await piece_manager.mark_failed(idx)
-                else:
-                    await piece_manager.mark_failed(idx)
 
-            await asyncio.sleep(0)
-            #log(f"result for the peers {result}")
-        return pices_hash
+                    hash_index = decode_data[b'info'][b'pieces'][20*piece_index:20*(piece_index+1)]
+                    if hash_comp(data_buffer[piece_index], hash_index) == 0:
+                        print(f"\033[91mpiece {piece_index} failed hash\033[0m")
+                        del data_buffer[piece_index]
+                        # peer_manager.remove_peer(peer)
+                        await piece_manager.mark_failed(piece_index)
+                    else:
+                        bytes_in += len(piece_data)
+                        print(f"\033[92mpiece {piece_index} verified\033[0m")
+
+        except asyncio.TimeoutError:
+            print(f"[{name}] Peer {peer} timed out on piece {index}")
+            # peer_manager.remove_peer(peer)
+            await piece_manager.mark_failed(index)
+        except Exception as e:
+            print(f"[{name}] Peer {peer} failed with error {e}")
+            # peer_manager.remove_peer(peer)
+            await piece_manager.mark_failed(index)
+        finally:
+            queue.task_done()
+
+async def peer_tcp_async(decode_data,piece_manager:PieceManager,peer_manager:PeerManager,data_buffer,handshake_type=0):
+    index = None
+    request_info = {"begin": 0, "length": 0, "index": 0}
+    pices_hash = {}
+    queue = asyncio.Queue(maxsize=MAX_QUEUE)
+    num_pieces = math.ceil(len(decode_data[b'info'][b'pieces'])/20)
+    have_pieces = bytearray(num_pieces*b"\x00")
+    state = 0
+
+    global bytes_in,bytes_out
+    workers = [asyncio.create_task(worker(f"W{i}", queue, peer_manager, piece_manager, decode_data, data_buffer))
+               for i in range(MAX_QUEUE)]
+    try:
+        while piece_manager.get_size() > 0:
+            for peer in list(peer_manager.unchocked_list):
+                print(f"\033[92mchecking peer {peer}\033[0m")
+                if peer.can_process <= 0:
+                    print(f"\033[92mpeer busy {peer}\033[0m")
+                    continue
+                if await peer_manager.chek_alive(peer) == 0:
+                    print(f"\033[92mpeer dead {peer}\033[0m")
+                    continue
+                if peer.state == 3:
+                    print(f"\033[92mpeer choked {peer}\033[0m")
+                    continue
+
+                index = await piece_manager.get_piece_for_peer(peer.have_pieces)
+                if index is None:
+                    peer_manager.remove_peer(peer)
+                    continue
+
+                await queue.put((peer, index))
+                await asyncio.sleep(0.1)   # enqueue one task
+                print(f"Enqueued request: peer={peer}, piece={index}")
+
+            await asyncio.sleep(20)
+
+        # wait for all enqueued jobs to finish
+        await queue.join()
 
     except Exception as e:
         log(f"{index} -> {e}",level="Error")
         traceback.print_exc()
+        sys.exit(1)
         if index:
             await piece_manager.mark_failed(index)
         return None
+    finally:
+        for w in workers:
+            w.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
+
+    print("All pieces processed.")
+
+   
 
 async def get_meta_data(writer,reader,meta_id:int,messaghe_info,meta_manager:MetadataManger,host,port):
 
