@@ -377,9 +377,11 @@ def discover_peer(bedecoded_value,flag = 1,torrent = 0):
         elif url.startswith("udp://"):
             try:
                 info_hash = bedecoded_value[b'info']
+                if torrent == 0 :
+                    info_hash = get_info_hash(info)
                 peer_id = bedecoded_value[b'peer_id']
                 port = 6881
-                print(f"info hash {bedecoded_value[b'info']}")
+                print(f"info hash {info_hash}")
                 peers = get_peers_from_udp_tracker(url, info_hash, peer_id, port)
                 for ip, port in peers:
                     if (ip, port) not in have_peer:
@@ -965,6 +967,12 @@ class PeerManager:
                     self.remove_peer(i)
             sortes = sorted(self.peer,key = peer_sort_key)
             global bytes_in,bytes_out,unsuccessful_download,successful_download
+            if len(self.peer) < 5:
+                peer_info = discover_peer(self.decode_data,flag=0)
+                for i in peer_info:
+                    if ({'host':i,'port':peer_info[i]} not in self.connected_peers_list):
+                        self.not_connected.append({"host":i,"port":peer_info[i]})
+
 
             print(f"\033[92mDownloaded: {bytes_in/(1024*1024):.2f} MB, Uploaded: {bytes_out/(1024*1024):.2f} MB Leacher: {self.leacher} Seeder: {self.seeder} Successful: {successful_download} Unsuccessful: {unsuccessful_download}\033[0m ")
             top_peers = sortes[:min(len(sortes),len(sortes))]
