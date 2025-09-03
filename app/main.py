@@ -486,7 +486,7 @@ def read_message(message):
         message_return["message_id"] = int.from_bytes(payload[0:1])
         message_return["payload"] = payload[1:]
         
-    print(f"message return {message_return}")
+    # print(f"message return {message_return}")
 
     #Now send Intrested message
 
@@ -1013,7 +1013,7 @@ class MetadataManger:
     async def get_next_missing(self):
         async with self.lock:
             for i,data in self.pieces.items():
-                if data is None:
+                if data is None or data == b'get':
                     self.pieces[i] = b'get'
                     return i
         return None
@@ -1221,13 +1221,15 @@ async def peer_tcp_async(decode_data,piece_manager:PieceManager,peer_manager:Pee
    
 
 async def get_meta_data(writer, reader, meta_id: int, messaghe_info, 
-                        meta_manager: MetadataManger, host, port, new_peers: asyncio.Queue):
+                        meta_manager: MetadataManger, host, port, new_peers: asyncio.Queue,stop_event:asyncio.Event):
     piece_index = None
     try:
         while True:
             piece_index = await meta_manager.get_next_missing()
-            log(f"index {piece_index} {host} {port} {meta_id}")
+            print(f"\033[92mrequesting meta data index {piece_index} {host} {port} {meta_id}\033[0m")
             if piece_index is None:
+                print(f"\033[92mno more meta data {host} {port} {meta_id}\033[0m")
+                stop_event.set()
                 break
 
             messaghe_info[b'piece'] = piece_index
@@ -1237,14 +1239,14 @@ async def get_meta_data(writer, reader, meta_id: int, messaghe_info,
 
             meta_data = None
             if messaghe_info[b'msg_type'] == 0:
-                log(f"requesting meta data {payload}")
+                #log(f"requesting meta data {payload}")
                 writer.write(payload)
                 await writer.drain()
 
                 resp = await recv_async(reader)
                 resp = read_message(resp)
 
-                while resp['message_type'] != 20 or resp['message_id'] != meta_id:
+                while resp['message_type'] != 20 or resp['message_id'] != 1 and (await meta_manager.is_complete() == False):
                     resp = await recv_async(reader)
                     if resp is None:
                         continue
@@ -1258,8 +1260,14 @@ async def get_meta_data(writer, reader, meta_id: int, messaghe_info,
                                 ip_addr = socket.inet_ntoa(ip_byte)
                                 port = int.from_bytes(port_byte, "big")
                                 await new_peers.put((ip_addr, port))
-
+                if await meta_manager.is_complete():
+                    await stop_event.set()
+                    break
                 other_info, meta_data = decode_metadata(resp['payload'])
+
+            if await meta_manager.is_complete():
+                await stop_event.set()
+                return
 
             if meta_data is None:
                 await meta_manager.falied(piece_index)
@@ -1279,17 +1287,19 @@ async def get_meta_data(writer, reader, meta_id: int, messaghe_info,
 async def meta_info_downloader(peer_info,socket_info):
     meta_manager = None
     new_peers = asyncio.Queue()
+    stop_event = asyncio.Event()
     for i in peer_info:
         await new_peers.put((i,peer_info[i]))
     async def download(host,port):
         nonlocal meta_manager
+        nonlocal stop_event
         try :
-            print(f"downloading meta data from {host}:{port}")
+            #print(f"downloading meta data from {host}:{port}")
             reader,writer = await asyncio.open_connection(host=host,port=port)
             peer_info_new,bitfield = await negociate_handshake(writer,reader,socket_info,handshake_type=1)
-            print(f"peer info {peer_info_new}")
+            #print(f"peer info {peer_info_new}")
             if bitfield is None:
-                while True:
+                while True and not stop_event.is_set():
                     await asyncio.sleep(0.1)
                     message = await recv_async(reader)
                     if message is not None:
@@ -1308,7 +1318,7 @@ async def meta_info_downloader(peer_info,socket_info):
                                             port = int.from_bytes(port_byte,"big")
                                             #print(f"\033[94madded {ip_addr}:{port}\033[0m")
                                             await new_peers.put((ip_addr,port))
-            while True:
+            while True and not stop_event.is_set():
                 if bitfield['message_type'] == 20:
                     if bitfield['message_id'] == 0:
                         break
@@ -1325,14 +1335,20 @@ async def meta_info_downloader(peer_info,socket_info):
                 message = await recv_async(reader)
                 if message is not None:
                     bitfield = read_message(message)
+            if stop_event.is_set():
+                await writer.drain()
+                writer.close()
+                return
             decode_meta_info ,_ = decode_bencode(bitfield['payload'])
-            print(f"decode_meta_info {decode_meta_info}" )
+
+            #print(f"decode_meta_info {decode_meta_info}" )
             meta_id = decode_meta_info[b'm'][b'ut_metadata']
             meta_data_size = decode_meta_info[b'metadata_size']
             message_info = {
                 b'msg_type':0,
                 b'piece':0
-            }
+            }       
+            print(f"\033[92mhandshaked with {host}:{port}\033[0m")
             if meta_manager is None:
                 num_pieces = math.ceil(meta_data_size/16384)
                 print(f"num_pieces {num_pieces}")
@@ -1342,12 +1358,12 @@ async def meta_info_downloader(peer_info,socket_info):
                 if meta_manager is not None:
                     await asyncio.sleep(0.1)
                     break
-                
+             
             while not await meta_manager.is_complete():
                 await asyncio.sleep(0.1)
                 try:
                     print(f"getting meta data from {host}:{port}")
-                    await asyncio.wait_for(get_meta_data(writer,reader,meta_id,message_info,meta_manager,host,port,new_peers), timeout=60)
+                    await asyncio.wait_for(get_meta_data(writer,reader,meta_id,message_info,meta_manager,host,port,new_peers,stop_event), timeout=60)
                 except Exception as e:
                     print(f"Error while getting metadata from {host}:{port} : {e}")
                     # await new_peers.put((host,port))
@@ -1355,6 +1371,7 @@ async def meta_info_downloader(peer_info,socket_info):
 
             await writer.drain()
             writer.close()
+            print(f"completed downloading meta data from {host}:{port}")
 
         except Exception as e:
             trace_str = traceback.format_exc()
@@ -1376,26 +1393,42 @@ async def meta_info_downloader(peer_info,socket_info):
             print(f"Download from {ip}:{port} Error {e}")
     task = []
 
+    start = time.time()
+    timeout = 180  # 3 minutes
     while True:
+        # stop if more than 3 minutes passed
+        if time.time() - start > timeout:
+            print("⏰ Timeout: stopping metadata loop after 3 minutes")
+            break
+
         if meta_manager is not None:
             if await meta_manager.is_complete():
+                print("✅ Metadata download complete")
                 break
+
         try:
-            ip,port = await asyncio.wait_for(new_peers.get(),timeout=2)
-            print(f"got new peer {ip}:{port}")  
+            ip, port = await asyncio.wait_for(new_peers.get(), timeout=2)
+            print(f"got new peer {ip}:{port}")
         except Exception as e:
             print(f"no more peer to get meta data {e}")
-            asyncio.sleep(1)
+            await asyncio.sleep(1)  # <- missing await in your code
             continue
+
         if ip is None:
             continue
-        asyncio.create_task(download_with_timeout(ip,port))
 
+        tasks = asyncio.create_task(download_with_timeout(ip, port))
+        task.append(tasks)
+    
+    for t in task:
+        if not t.done():
+            print(f"canceling {t}")
+            t.cancel()
     #await asyncio.gather(*task)
 
     if meta_manager:
         data = meta_manager.assemble()
-        print(f"decoded_meta_data {data}")
+        # print(f"decoded_meta_data {data}")
         decoded_meta_data,_ = decode_bencode(data)
         calculated_info_hash= get_info_hash(decoded_meta_data)
         if calculated_info_hash == socket_info['info_hash']:
@@ -1765,6 +1798,7 @@ def main():
         info_hash,url = parse_magnet_link(magnet_link)
         bencoded_value = get_decode_style(url,info_hash)
         peer_info = discover_peer(bencoded_value,torrent=1,flag=0)
+        print(f"peer_info {peer_info}")
         socket_info = {
             "info_hash":bencoded_value[b'info'],
             "peer_id":bencoded_value[b'peer_id']
@@ -1831,14 +1865,13 @@ def main():
         asyncio.set_event_loop(loop)
 
         decoded_metadata = loop.run_until_complete(meta_info_downloader(peer_info,socket_info))
-        print(f"Tracker URL: {urllib.parse.unquote(url)}")
+        print(f"Tracker URL: {urllib.parse.unquote(url[0])}")
         print(f"Length: {decoded_metadata[b'length']}")
         print(f"Info Hash: {bencoded_value[b'info'].hex()}")
         print(f"Piece Length: {decoded_metadata[b'piece length']}")
-        print(f"Piece Hashes:")
-        for i in range(0,len(decoded_metadata[b'pieces']),20):
-            print(f"{decoded_metadata[b'pieces'][i:i+20].hex()}")
-
+        # print(f"Piece Hashes:")
+        # for i in range(0,len(decoded_metadata[b'pieces']),20):
+        #     print(f"{decoded_metadata[b'pieces'][i:i+20].hex()}")
         bencoded_value[b'info'] = decoded_metadata
 
         pices_data = loop.run_until_complete(download_whole_file_async(peer_info,bencoded_value,index = piece_nr,handshake_type=1))
