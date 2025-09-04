@@ -466,6 +466,7 @@ def read_message(message):
         "piece_index":None,
         "message_type":message_type,
         "message_id" : None,
+        "have_all":0
     }
     #choke
     if message_type == 0:
@@ -487,6 +488,9 @@ def read_message(message):
         # print(f"\033[92mextended message {payload}\033[0m")
         message_return["message_id"] = int.from_bytes(payload[0:1])
         message_return["payload"] = payload[1:]
+    elif message_type == 14:
+        message_return["have_all"] = 1
+
         
     # print(f"message return {message_return}")
 
@@ -650,7 +654,8 @@ class Peer:
                 if resp_bitfield['have_pices']:
                     log(f"resp bitfiel {resp_bitfield.keys()}")
                     self.have_pieces = bytearray(resp_bitfield['have_pices'])
-
+                if resp_bitfield['have_all'] == 1:
+                    self.have_pieces = bytearray("\xff"*math.ceil(self.num_pieces/8),encoding="latin-1")
             if self.peer_id is None:
                 log(f"peer_id is None")
                 self.manager.remove_peer(self)
@@ -714,6 +719,11 @@ class Peer:
                     set_piece(self.have_pieces,int.from_bytes(message['have_idx'],byteorder="big"))
                 if message['message_type'] == 5:
                     self.have_pieces = bytearray(message['have_pices'])
+                if message['message_type'] == 14:
+                    self.have_pieces = bytearray("\xff"*math.ceil(self.num_pieces/8),encoding="latin-1")
+                if message['message_type'] == 15:
+                    print(f"\033[92m No piece is available {self.__repr__()} {message['message_type']}\033[0m")
+                
                 if message['message_type'] == 20:
                     payload = decode_bencode(message['payload'])
                     if message['message_id'] == 2:
@@ -1048,7 +1058,7 @@ async def perform_handshke(writer,reader,socket_info,handshake_type = 0):
     peer_id = socket_info["peer_id"]
     protocol_bit = 8*b"\x00"
     if handshake_type == 1:
-        protocol_bit = 5*b"\x00" + b"\x10" + b"\x00" + b"\x04"
+        protocol_bit = 5*b"\x00" + b"\x10" + b"\x00" + b"\x05"
     #pstrlen + pstr + reserved + info_hash + peer_id
     # print(f"\033[92minfo_hash {type(info_hash)} {len(info_hash)}\033[0m")
     # print(f"\033[92mpeer_id {type(peer_id)} {len(peer_id)}\033[0m")
@@ -1070,8 +1080,11 @@ async def negociate_handshake(writer,reader,socket_info,handshake_type = 0):
         
         decoded_protocol = decode_torrent_protocol(resp)
         supprt_extention = (decoded_protocol["function_byte"][5] & 0x10)!=0
-        #print(f"responce from the peer {decoded_protocol}")
+        supprt_dht = (decoded_protocol["function_byte"][7] & 0x01)!=0
+        print(f"responce from the peer {decoded_protocol}")
         ut_metadata_id = None
+
+        
 
         if "send_bitfield" in socket_info:
             #print(f"Sending bitfield {socket_info['send_bitfield']}")
@@ -1086,6 +1099,7 @@ async def negociate_handshake(writer,reader,socket_info,handshake_type = 0):
         #log(f"responce bitfield {resp_bitfield}")
         if resp_bitfield:
             resp_bitfield = read_message(resp_bitfield)
+            
         resp_handshake = None
         if supprt_extention:
             log(f"extended handshake")
@@ -1112,9 +1126,19 @@ async def negociate_handshake(writer,reader,socket_info,handshake_type = 0):
             if resp_bitfield:
                 resp_bitfield["message_id"] = resp_handshake["message_id"]
                 resp_bitfield["payload"] = resp_handshake["payload"]
-
+                if resp_bitfield["have_all"] == 0:
+                    resp_bitfield["have_all"] = resp_handshake["have_all"]
             else:
                 resp_bitfield = resp_handshake
+        if supprt_dht:
+            print(f"support dht")
+            dht_message_payload = b"\x09" + socket_info.get('dht_port',6881).to_bytes(2,byteorder="big")
+            length = len(dht_message_payload)
+            length_prefix = struct.pack(">I",len(dht_message_payload))
+            dht_message_payload = length_prefix + dht_message_payload
+            print(f"Sending dht message {dht_message_payload}")
+            writer.write(dht_message_payload)
+            await writer.drain()
         return decoded_protocol,resp_bitfield
     except Exception as e:
         trace_str = traceback.format_exc()
@@ -1559,7 +1583,7 @@ class DHT:
         self.node_id = node_id
         self.port = port
         self.transport = None
-        self.thread = threading.Thread(target=self.start,daemon=True)
+        self.thread = threading.Thread(target=self._run_loop,daemon=True)
 
         self.routing_table = {}
         self.transaction_id = 0
@@ -1572,17 +1596,25 @@ class DHT:
             ("dht.aelitis.com", 6881),
             ("dht.libtorrent.org", 25401),
         ]
-    async def start(self):
+    def _run_loop(self):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         print(f"Event loop ID: {id(loop)}")
         print(f"Event loop object: {loop}")
         print(f"Running in thread: {threading.current_thread().name}")
-        self.transport,_ = loop.create_datagram_endpoint(self,local_addr=('0.0.0.0',self.port))
+        loop.run_until_complete(self.start())
+
+    async def start(self):
+        self.transport, _ = await asyncio.get_event_loop().create_datagram_endpoint(
+            lambda: self,
+            local_addr=("0.0.0.0", self.port),
+        )
         try:
-            await asyncio.Future()
+
+            await asyncio.Future()  # keep loop alive
         finally:
             self.transport.close()
+        
     def connection_made(self,transport):
         self.transport = transport
     
@@ -1659,7 +1691,7 @@ class DHT:
         except Exception as e:
             trace_str = traceback.format_exc()
             last_traceback = trace_str
-            log(f"error in send_message {last_traceback}",level="Error")
+            print(f"error in send_message {last_traceback}")#,level="Error")
     def get_transaction_id(self):
         self.transaction_id += 1
         return str(self.transaction_id).encode()[:2]
@@ -1675,6 +1707,7 @@ class DHT:
                 b'target': target
             }
         }
+        print(f"Sending find_node to {host}:{port}")
         self.send_message(message,(host,port))
 
     def discover_peer(self,info_hash):
@@ -1685,7 +1718,7 @@ class DHT:
             except Exception as e:
                 trace_str = traceback.format_exc()
                 last_traceback = trace_str
-                log(f"error in discover_peer {last_traceback}",level="Error")
+                print(f"error in discover_peer {last_traceback}")#,level="Error")
 
 
 def main():
@@ -1900,18 +1933,20 @@ def main():
             "info_hash":bencoded_value[b'info'],
             "peer_id":bencoded_value[b'peer_id']
         }
-
+        node_id = bencoded_value[b'peer_id']
+        dht = DHT(node_id,port=6881)
+        dht.discover_peer(bencoded_value[b'info'])
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
         decoded_metadata = loop.run_until_complete(meta_info_downloader(peer_info,socket_info))
-        print(f"Tracker URL: {urllib.parse.unquote(url)}")
+        print(f"Tracker URL: {urllib.parse.unquote(url[0])}")
         print(f"Length: {decoded_metadata[b'length']}")
         print(f"Info Hash: {bencoded_value[b'info'].hex()}")
         print(f"Piece Length: {decoded_metadata[b'piece length']}")
         print(f"Piece Hashes:")
-        for i in range(0,len(decoded_metadata[b'pieces']),20):
-            print(f"{decoded_metadata[b'pieces'][i:i+20].hex()}")
+        # for i in range(0,len(decoded_metadata[b'pieces']),20):
+        #     print(f"{decoded_metadata[b'pieces'][i:i+20].hex()}")
 
         bencoded_value[b'info'] = decoded_metadata
 
@@ -1950,6 +1985,19 @@ def main():
         # peer_info = decode_torrent_protocol(resp)
         #print(resp)
         #print(f"Peer ID: {peer_info["peer_id"].hex()}")
+    elif command == "dht":
+        output_file = sys.argv[3]
+        magnet_link = sys.argv[4]
+        info_hash,url = parse_magnet_link(magnet_link)
+        bencoded_value = get_decode_style(url,info_hash)
+        node_id = bencoded_value[b'peer_id']
+        print(f"node_id {node_id}")
+        print(f"info_hash {info_hash}")
+
+        dht = DHT(node_id,port=6881)
+        dht.discover_peer(bencoded_value[b'info'])
+        while True:
+            time.sleep(1)
     else:
         raise NotImplementedError(f"Unknown command {command}")
 
