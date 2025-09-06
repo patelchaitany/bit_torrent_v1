@@ -144,7 +144,7 @@ def read_torrent(file_path,print_flag = 1):
         file_length_pice = decoded_data[b"info"][b'piece length']
 
         file_length = decoded_data[b"info"][b'length']
-        
+
         if print_flag:
             print(f"Tracker URL: {tracker_url}")
             print(f"Length: {file_length}")
@@ -373,7 +373,7 @@ def discover_peer(bedecoded_value,flag = 1,torrent = 0):
                 trace_str = traceback.format_exc()
                 last_traceback = trace_str
                 print(f"error in discover_peer {e}") #,level="Error")
-        
+
         elif url.startswith("udp://"):
             try:
                 info_hash = bedecoded_value[b'info']
@@ -440,7 +440,7 @@ def hash_comp(data,hash):
         return 0
 
 def decode_metadata(data):
-    
+
     #print(f"\033[92mdecode_metadata {data}\033[0m")
     if data is None:
         return None,None
@@ -491,7 +491,7 @@ def read_message(message):
     elif message_type == 14:
         message_return["have_all"] = 1
 
-        
+
     # print(f"message return {message_return}")
 
     #Now send Intrested message
@@ -532,7 +532,7 @@ async def recv_async(reader,flag = 0):
         log(f"messgae Len {length}")
     # Read the message payload
         message = b""
-        
+
         chunk = await reader.readexactly(length - len(message))
         message += chunk
         log(f"chunk len {len(message)}")
@@ -682,7 +682,7 @@ class Peer:
                 bytes_received = 0
                 async with self.reader_lock:
                     raw_msg = await recv_async(self.reader)
-                
+
                 if raw_msg == None:
                     log(f"the raw_msg is None {self.__repr__()}")
                     await asyncio.sleep(0.1)
@@ -723,7 +723,7 @@ class Peer:
                     self.have_pieces = bytearray("\xff"*math.ceil(self.num_pieces/8),encoding="latin-1")
                 if message['message_type'] == 15:
                     print(f"\033[92m No piece is available {self.__repr__()} {message['message_type']}\033[0m")
-                
+
                 if message['message_type'] == 20:
                     payload = decode_bencode(message['payload'])
                     if message['message_id'] == 2:
@@ -754,7 +754,7 @@ class Peer:
         global bytes_out
         if payload is None:  # keepalive
             payload = (0).to_bytes(4, "big")
-            
+
         try:
         # Lock was acquired
             async with self.writer_lock:
@@ -777,7 +777,7 @@ class Peer:
         num_pieces = math.ceil(len(decoded_data[b'info'][b'pieces'])/20)
         piece_length = decoded_data[b'info'][b'piece length']
         total_length_file = decoded_data[b'info'][b'length']
-        
+
         total_length = piece_length
         if index == num_pieces - 1:
             total_length = total_length_file % piece_length
@@ -825,11 +825,11 @@ class Peer:
                     total_length -= min(16*1024, total_length)
                     request_info['length'] = min(16*1024, total_length)
                     await asyncio.sleep(0.2)
-                
+
                 if self.state == 3 or self.state == 1:
                         await self.chocke.wait()
                 await self.send_msg(big_payload)
-                    
+
                 for piece_key in list(request_piece):
                     try:
                         if index not in self.block_queues:
@@ -850,7 +850,7 @@ class Peer:
                         self.can_process = self.can_process + 1
                         log(f"[{self.__repr__()}] {last_traceback}",level="Error")
                         return None
-                        
+
             print(f"\033[93mrequest_piece outside: {request_piece} {total_length}\033[0m")
             for piece_key in list(request_piece):
                 try:
@@ -870,7 +870,7 @@ class Peer:
                     self.can_process = self.can_process + 1
                     log(f"[{self.__repr__()}] {last_traceback}",level="Error")
                     return None
-                
+
             if index not in pices_hash:
                 pices_hash[index] = b""
                 pices_hash[index] += byte_message
@@ -917,7 +917,7 @@ class PeerManager:
                 #print(f"\033[94madded {ip_addr}:{port}\033[0m")
                 if b'added.f' in peer_info:
                     if peer_info[b'added.f'][i//6]&0x02:
-                        self.seeder += 1   
+                        self.seeder += 1
                     else:
                         self.leacher += 1
                 self.not_connected.append({"host":ip_addr,"port":port})
@@ -955,7 +955,7 @@ class PeerManager:
                 log(f"sending keep keep_alive_loop {peer}")
                 if peer.writer and now - peer.last_keepalive > 100:
                     await peer.send_msg(None)
-    
+
     async def chek_alive(self,peer):
         if peer.writer is None:
             self.remove_peer(peer)
@@ -1077,14 +1077,14 @@ async def negociate_handshake(writer,reader,socket_info,handshake_type = 0):
         if len(resp) < 68:
             return None,None
 
-        
+
         decoded_protocol = decode_torrent_protocol(resp)
         supprt_extention = (decoded_protocol["function_byte"][5] & 0x10)!=0
         supprt_dht = (decoded_protocol["function_byte"][7] & 0x01)!=0
         print(f"responce from the peer {decoded_protocol}")
         ut_metadata_id = None
 
-        
+
 
         if "send_bitfield" in socket_info:
             #print(f"Sending bitfield {socket_info['send_bitfield']}")
@@ -1099,7 +1099,7 @@ async def negociate_handshake(writer,reader,socket_info,handshake_type = 0):
         #log(f"responce bitfield {resp_bitfield}")
         if resp_bitfield:
             resp_bitfield = read_message(resp_bitfield)
-            
+
         resp_handshake = None
         if supprt_extention:
             log(f"extended handshake")
@@ -1121,7 +1121,7 @@ async def negociate_handshake(writer,reader,socket_info,handshake_type = 0):
                 log(f"responce handshake {resp_handshake}")
         #print(f"extended handshake {decode_bencode(resp_handshake['payload'])}")
         log(f"decoded_protocol {len(decoded_protocol)}")
-        
+
         if resp_handshake:
             if resp_bitfield:
                 resp_bitfield["message_id"] = resp_handshake["message_id"]
@@ -1169,7 +1169,7 @@ async def worker(name, queue, peer_manager, piece_manager, decode_data, data_buf
                     if piece_index not in data_buffer:
                         data_buffer[piece_index] = piece_data
                     else:
-                        data_buffer[piece_index] += piece_data  
+                        data_buffer[piece_index] += piece_data
 
                     hash_index = decode_data[b'info'][b'pieces'][20*piece_index:20*(piece_index+1)]
                     if hash_comp(data_buffer[piece_index], hash_index) == 0:
@@ -1250,9 +1250,9 @@ async def peer_tcp_async(decode_data,piece_manager:PieceManager,peer_manager:Pee
 
     print("All pieces processed.")
 
-   
 
-async def get_meta_data(writer, reader, meta_id: int, messaghe_info, 
+
+async def get_meta_data(writer, reader, meta_id: int, messaghe_info,
                         meta_manager: MetadataManger, host, port, new_peers: asyncio.Queue,stop_event:asyncio.Event):
     piece_index = None
     try:
@@ -1379,7 +1379,7 @@ async def meta_info_downloader(peer_info,socket_info):
             message_info = {
                 b'msg_type':0,
                 b'piece':0
-            }       
+            }
             print(f"\033[92mhandshaked with {host}:{port}\033[0m")
             if meta_manager is None:
                 num_pieces = math.ceil(meta_data_size/16384)
@@ -1390,7 +1390,7 @@ async def meta_info_downloader(peer_info,socket_info):
                 if meta_manager is not None:
                     await asyncio.sleep(0.1)
                     break
-             
+
             while not await meta_manager.is_complete():
                 await asyncio.sleep(0.1)
                 try:
@@ -1451,7 +1451,7 @@ async def meta_info_downloader(peer_info,socket_info):
 
         tasks = asyncio.create_task(download_with_timeout(ip, port))
         task.append(tasks)
-    
+
     for t in task:
         if not t.done():
             print(f"canceling {t}")
@@ -1503,7 +1503,7 @@ async def download_whole_file_async(peer_info, decode_data,index = None,handshak
         await asyncio.sleep(1)
         # if isinstance(index,int):
         #     break
-    
+
     asyncio.create_task(peer_manager.choke())
     await asyncio.sleep(10)
     result = await peer_tcp_async(decode_data,piece_manager,peer_manager,data_buffer)
@@ -1584,7 +1584,8 @@ class DHT:
         self.port = port
         self.transport = None
         self.thread = threading.Thread(target=self._run_loop,daemon=True)
-
+        self.connecting_peer = []
+        self.sharing_peer = []
         self.routing_table = {}
         self.transaction_id = 0
         self.thread.start()
@@ -1614,14 +1615,14 @@ class DHT:
             await asyncio.Future()  # keep loop alive
         finally:
             self.transport.close()
-        
+
     def connection_made(self,transport):
         self.transport = transport
-    
+
     def datagram_received(self,data,addr):
         try:
             message,_ = decode_bencode(data)
-            print(f"Received {message} from {addr}")
+            #print(f"Received {message} from {addr}")
             if b'y' in message:
                 if message[b'y'] == b'q':
                     if message[b'q'] == b'ping':
@@ -1680,31 +1681,50 @@ class DHT:
         }
         self.send_message(response,addr)
     def handle_response(self,message,addr):
-        print(f"Response from {addr}: {message}")
+        #print(f"Response from {addr}: {message}")
+        if b'r' in message:
+          if b'values' in message[b'r']:
+            print(f"\033[92mPeers: {message[b'r'][b'values']} \033[0m")
+            for i in message[b'r'][b'values']:
+                ip = socket.inet_ntoa(i[0:4])
+                port = int.from_bytes(i[4:6],"big")
+                if (ip,port) not in self.sharing_peer:
+                    self.sharing_peer.append((ip,port))
+                    print(f"\033[92mDiscovered peer at {ip}:{port}\033[0m")
+          if b'nodes' in message[b'r']:
+              nodes = message[b'r'][b'nodes']
+              for i in range(0,len(nodes),26):
+                  node_info = nodes[i:i+26]
+                  node_id = node_info[0:20]
+                  ip = socket.inet_ntoa(node_info[20:24])
+                  port = int.from_bytes(node_info[24:26],"big")
+                  if (ip,port) not in self.connecting_peer:
+                      self.connecting_peer.append((ip,port,node_id))
+                      print(f"Discovered node {node_id.hex()} at {ip}:{port}")
     def handle_error(self,message,addr):
         pass
     def send_message(self,message,addr):
         try:
             encoded_message = bencode(message)
             self.transport.sendto(encoded_message,addr)
-            print(f"Sent {message} to {addr}")
+            #print(f"Sent {message} to {addr}")
         except Exception as e:
             trace_str = traceback.format_exc()
             last_traceback = trace_str
-            print(f"error in send_message {last_traceback}")#,level="Error")
+            #print(f"error in send_message {last_traceback}")#,level="Error")
     def get_transaction_id(self):
         self.transaction_id += 1
         return str(self.transaction_id).encode()[:2]
 
 
-    def send_find_node(self,host,port,target):
+    def send_get_peers(self,host,port,target):
         message = {
             b't': self.get_transaction_id(),
             b'y': b'q',
-            b'q': b'find_node',
+            b'q': b'get_peers',
             b'a': {
                 b'id': self.node_id,
-                b'target': target
+                b'info_hash': target
             }
         }
         print(f"Sending find_node to {host}:{port}")
@@ -1714,15 +1734,43 @@ class DHT:
         for host,port in self.bootstrap_nodes:
             try:
                 addr = socket.gethostbyname(host)
-                self.send_find_node(addr,port,info_hash)
+                self.send_get_peers(addr,port,info_hash)
             except Exception as e:
                 trace_str = traceback.format_exc()
                 last_traceback = trace_str
                 print(f"error in discover_peer {last_traceback}")#,level="Error")
+        for i in range(20):
+            time.sleep(0.1)
+            if len(self.sharing_peer) > 20:
+                break
+                # Sort peers by distance from target info hash and take top 8
+            def calculate_distance(peer_info, target):
+                peer_id = peer_info[2]  # peer_info is (ip, port, node_id)
+                # XOR distance between peer_id and target info_hash
+                distance = int.from_bytes(peer_id, 'big') ^ int.from_bytes(target, 'big')
+                return distance
+
+            sorted_peers = sorted(self.connecting_peer, key=lambda peer: calculate_distance(peer, info_hash))
+            top_peers = sorted_peers[:min(8, len(sorted_peers))]
+
+            for peer in top_peers:
+              self.send_get_peers(peer[0],peer[1],info_hash)
+              self.connecting_peer.remove(peer)
+
+        for i in list(self.sharing_peer):
+          print(f"\033[92m Found peer {i[0]}:{i[1]}\033[0m")
+          self.send_get_peers(i[0],i[1],info_hash)
+
+        for i in list(self.sharing_peer):
+          print(f"\033[92m Sharing peer {i[0]}:{i[1]}\033[0m")
+
 
 
 def main():
-
+    url = """
+    magnet:?xt=urn:btih:411025d006aedf77d0ed74f0cab283390990acd2&dn=pop-os_22.04_amd64_intel_56.iso&tr=udp%3A%2F%2Ffosstorrents.com%3A6969%2Fannounce&tr=http%3A%2F%2Ffosstorrents.com%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&tr=udp%3A%2F%2Ftracker-udp.gbitt.info%3A80%2Fannounce&tr=udp%3A%2F%2Fopen.demonii.com%3A1337%2Fannounce&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce&tr=udp%3A%2F%2Fexodus.desync.com%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.theoks.net%3A6969%2Fannounce&tr=udp%3A%2F%2Fopentracker.io%3A6969%2Fannounce&ws=http%3A%2F%2Fpop-iso.sfo2.cdn.digitaloceanspaces.com%2F22.04%2Famd64%2Fintel%2F56%2Fpop-os_22.04_amd64_intel_56.iso&ws=https%3A%2F%2Fiso.pop-os.org%2F22.04%2Famd64%2Fintel%2F56%2Fpop-os_22.04_amd64_intel_56.iso&ws=http%3A%2F%2Ffosstorrents.com%2Fdirect-links%2Fpop-os_22.04_amd64_intel_56.iso"""
+    if len(sys.argv) == 1:
+          sys.argv = ["main.py", "dht","-o","dht_output.txt",url]
     # print([[] , [] , []])
     if len(sys.argv) < 1:
         print("Usage: python main.py <command> [args]", file=sys.stderr)
@@ -1864,7 +1912,7 @@ def main():
         magnet_link = sys.argv[2]
         info_hash,url = parse_magnet_link(magnet_link)
         print(f"url {url} info_hash {info_hash}")
-        
+
         bencoded_value = get_decode_style(url,info_hash)
         dht = DHT(bencoded_value[b'peer_id'],port=6881)
         print(f"bencoded_value {bencoded_value}")
@@ -1879,7 +1927,7 @@ def main():
         asyncio.set_event_loop(loop)
 
         decoded_metadata = loop.run_until_complete(meta_info_downloader(peer_info,socket_info))
-        
+
         dht.discover_peer(bencoded_value[b'info'])
         print(f"Tracker URL: {urllib.parse.unquote(bencoded_value[b'announce'].decode(encoding='latin-1'))}")
         print(f"Length: {decoded_metadata[b'length']}")
@@ -1975,8 +2023,6 @@ def main():
         socket_info["peer_id"] = decode_data[b'peer_id']
         socket_info["info_hash"] = info_hash
         socket_info["send_bitfield"] = current_have
-
-
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         reader, writer = loop.run_until_complete(asyncio.open_connection(ip_addr, port))
@@ -1989,6 +2035,7 @@ def main():
         output_file = sys.argv[3]
         magnet_link = sys.argv[4]
         info_hash,url = parse_magnet_link(magnet_link)
+        print(f"url {url} info_hash {info_hash}")
         bencoded_value = get_decode_style(url,info_hash)
         node_id = bencoded_value[b'peer_id']
         print(f"node_id {node_id}")
