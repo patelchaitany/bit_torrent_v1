@@ -488,6 +488,9 @@ def read_message(message):
         # print(f"\033[92mextended message {payload}\033[0m")
         message_return["message_id"] = int.from_bytes(payload[0:1])
         message_return["payload"] = payload[1:]
+    elif message_type == 9:
+        # DHT port message (BEP 5)
+        message_return["dht_port"] = int.from_bytes(payload[0:2], byteorder="big")
     elif message_type == 14:
         message_return["have_all"] = 1
 
@@ -635,7 +638,7 @@ class Peer:
             log(f"shake is ongoing {self.__repr__()}")
             self.reader , self.writer = await asyncio.wait_for(
             asyncio.open_connection(self.host, self.port),
-            timeout=60)
+            timeout=30)  # Reduced from 60 to 30 seconds
             if self.reader is None or self.writer is None:
                 self.manager.remove_peer(self)
                 log(f"{self.__repr__()} peer have zero writer and zero reader")
@@ -656,11 +659,8 @@ class Peer:
                     self.have_pieces = bytearray(resp_bitfield['have_pices'])
                 if resp_bitfield['have_all'] == 1:
                     self.have_pieces = bytearray("\xff"*math.ceil(self.num_pieces/8),encoding="latin-1")
-            if self.peer_id is None:
-                log(f"peer_id is None")
-                self.manager.remove_peer(self)
-                return
-            self.state = 1
+            self.state = 2  # Changed from 1 to 2
+            self.chocke.set()  # Set unchoked state immediately
             asyncio.create_task(self.reader_loop())
             #asyncio.run_coroutine_threadsafe(self.reader_loop(),Peer._loop)
             log(f"shake is succssfull {self.__repr__()}")
@@ -685,7 +685,7 @@ class Peer:
 
                 if raw_msg == None:
                     log(f"the raw_msg is None {self.__repr__()}")
-                    await asyncio.sleep(0.1)
+                    await asyncio.sleep(0.01)
                     continue
                 log(f"[{self.__repr__()}] print the raw msg {len(raw_msg)}")
                 bytes_received += len(raw_msg)
@@ -723,6 +723,12 @@ class Peer:
                     self.have_pieces = bytearray("\xff"*math.ceil(self.num_pieces/8),encoding="latin-1")
                 if message['message_type'] == 15:
                     print(f"\033[92m No piece is available {self.__repr__()} {message['message_type']}\033[0m")
+
+                if message['message_type'] == 9:
+                    try:
+                        self.manager.add_dht_peer(self.host, message['dht_port'])
+                    except Exception:
+                        pass
 
                 if message['message_type'] == 20:
                     payload = decode_bencode(message['payload'])
@@ -835,7 +841,7 @@ class Peer:
                         if index not in self.block_queues:
                             self.block_queues[index] = asyncio.Queue()
 
-                        piece_key_request = await asyncio.wait_for(self.block_queues[index].get(), timeout=40)
+                        piece_key_request = await asyncio.wait_for(self.block_queues[index].get(), timeout=20)  # Reduced from 40 to 20
                         data = self.data_map.pop(piece_key_request)
                         _,begin = piece_key_request
                         byte_message[begin:begin+len(data)] = data
@@ -856,7 +862,7 @@ class Peer:
                 try:
                     if index not in self.block_queues:
                         self.block_queues[index] = asyncio.Queue()
-                    piece_key_request = await asyncio.wait_for(self.block_queues[index].get(), timeout=40)
+                    piece_key_request = await asyncio.wait_for(self.block_queues[index].get(), timeout=20)  # Reduced from 40 to 20
                     data = self.data_map.pop(piece_key_request)
                     _,begin = piece_key_request
                     byte_message[begin:begin+len(data)] = data
@@ -900,6 +906,10 @@ class PeerManager:
         self.unchocked_list = []
         self.decode_data = decode_data
         self.connected_peers = 0
+        # DHT node and cache of known DHT-capable peers
+        self.dht = DHT(self.decode_data[b'peer_id'], port=6881)
+        self.dht_peers = []
+
         self.connected_peers_list = []
         self.seeder = 0
         self.leacher = 0
@@ -921,6 +931,35 @@ class PeerManager:
                     else:
                         self.leacher += 1
                 self.not_connected.append({"host":ip_addr,"port":port})
+
+    def add_dht_peer(self, host, port):
+        if (host, port) not in getattr(self, 'dht_peers', []):
+            self.dht_peers.append((host, port))
+
+    def get_dht_peers(self):
+        return list(getattr(self, 'dht_peers', []))
+
+    async def request_peers_from_dht(self):
+        try:
+            # 1) Ask known DHT-capable peers for more peers for this info_hash
+            for h, p in getattr(self, 'dht_peers', []):
+                try:
+                    self.dht.send_get_peers(h, p, self.info_hash)
+                except Exception:
+                    continue
+
+            # 2) Wait asynchronously to allow responses to arrive
+            await asyncio.sleep(5)
+
+            # 3) Pull any newly discovered peers from the DHT node into our queue
+            for (ip, port) in list(getattr(self.dht, 'sharing_peer', [])):
+                entry = {"host": ip, "port": port}
+                if entry not in self.connected_peers_list and entry not in self.not_connected:
+                    self.not_connected.append(entry)
+
+            return True
+        except Exception:
+            return False
 
     def add_peer(self, socket_info):
         peer = Peer(socket_info, self)
@@ -977,11 +1016,13 @@ class PeerManager:
                     self.remove_peer(i)
             sortes = sorted(self.peer,key = peer_sort_key)
             global bytes_in,bytes_out,unsuccessful_download,successful_download
-            if len(self.peer) < 5:
-                peer_info = discover_peer(self.decode_data,flag=0)
-                for i in peer_info:
-                    if ({'host':i,'port':peer_info[i]} not in self.connected_peers_list):
-                        self.not_connected.append({"host":i,"port":peer_info[i]})
+            if len(self.peer) < 15:
+                # Trigger tracker discovery and DHT replenishment
+                asyncio.create_task(self.request_peers_from_dht())
+                # peer_info = discover_peer(self.decode_data,flag=0)
+                # for i in peer_info:
+                #     if ({'host':i,'port':peer_info[i]} not in self.connected_peers_list):
+                #         self.not_connected.append({"host":i,"port":peer_info[i]})
 
 
             print(f"\033[92mDownloaded: {bytes_in/(1024*1024):.2f} MB, Uploaded: {bytes_out/(1024*1024):.2f} MB Leacher: {self.leacher} Seeder: {self.seeder} Successful: {successful_download} Unsuccessful: {unsuccessful_download}\033[0m ")
@@ -1001,9 +1042,9 @@ class PeerManager:
                     await peer.send_msg(chocked)
                 else:
                     await peer.send_msg(unchocked)
-            if len(self.peer) < 50:
+            if len(self.peer) < 100:  # Increased from 50 to 100
                 for i in list(self.not_connected):
-                    if len(self.peer) < 50:
+                    if len(self.peer) < 100:  # Increased from 50 to 100
                         print(f"\033[95madding peer {self.connected_peers} {i['host']}:{i['port']}\033[0m")
                         if i not in self.connected_peers_list:
                             socket_info = {
@@ -1149,7 +1190,7 @@ async def negociate_handshake(writer,reader,socket_info,handshake_type = 0):
         return None,None
 
 MAX_QUEUE = 100
-BLOCK_TIMEOUT = 120  # seconds
+BLOCK_TIMEOUT = 60  # Reduced from 120 to 60 seconds
 
 async def worker(name, queue, peer_manager, piece_manager, decode_data, data_buffer):
     global bytes_in,bytes_out,successful_download,unsuccessful_download
@@ -1500,12 +1541,12 @@ async def download_whole_file_async(peer_info, decode_data,index = None,handshak
             "send_bitfield":current_have
         }
         peer_manager.add_peer(socket_info)
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.1)
         # if isinstance(index,int):
         #     break
 
-    asyncio.create_task(peer_manager.choke())
     await asyncio.sleep(10)
+    asyncio.create_task(peer_manager.choke())
     result = await peer_tcp_async(decode_data,piece_manager,peer_manager,data_buffer)
 
         #result = await peer_tcp_async(socket_info,decode_data,piece_manager,data_buffer)
@@ -1681,7 +1722,6 @@ class DHT:
         }
         self.send_message(response,addr)
     def handle_response(self,message,addr):
-        #print(f"Response from {addr}: {message}")
         if b'r' in message:
           if b'values' in message[b'r']:
             print(f"\033[92mPeers: {message[b'r'][b'values']} \033[0m")
@@ -1716,6 +1756,18 @@ class DHT:
         self.transaction_id += 1
         return str(self.transaction_id).encode()[:2]
 
+    def send_find_peers(self,host,port,target):
+        message = {
+            b't': self.get_transaction_id(),
+            b'y': b'q',
+            b'q': b'find_node',
+            b'a': {
+                b'id': self.node_id,
+                b'target': target
+            }
+        }
+        print(f"Sending find_node to {host}:{port}")
+        self.send_message(message,(host,port))
 
     def send_get_peers(self,host,port,target):
         message = {
@@ -1731,38 +1783,42 @@ class DHT:
         self.send_message(message,(host,port))
 
     def discover_peer(self,info_hash):
-        for host,port in self.bootstrap_nodes:
-            try:
-                addr = socket.gethostbyname(host)
-                self.send_get_peers(addr,port,info_hash)
-            except Exception as e:
-                trace_str = traceback.format_exc()
-                last_traceback = trace_str
-                print(f"error in discover_peer {last_traceback}")#,level="Error")
-        for i in range(20):
-            time.sleep(0.1)
-            if len(self.sharing_peer) > 20:
-                break
-                # Sort peers by distance from target info hash and take top 8
-            def calculate_distance(peer_info, target):
-                peer_id = peer_info[2]  # peer_info is (ip, port, node_id)
-                # XOR distance between peer_id and target info_hash
-                distance = int.from_bytes(peer_id, 'big') ^ int.from_bytes(target, 'big')
-                return distance
+      for host,port in self.bootstrap_nodes:
+          try:
+              addr = socket.gethostbyname(host)
+              self.send_get_peers(addr,port,info_hash)
+          except Exception as e:
+              trace_str = traceback.format_exc()
+              last_traceback = trace_str
+              print(f"error in discover_peer {last_traceback}")#,level="Error")
+      for i in range(100):
+          if len(self.sharing_peer) > 100:
+              break
+              # Sort peers by distance from target info hash and take top 8
+          def calculate_distance(peer_info, target):
+              peer_id = peer_info[2]  # peer_info is (ip, port, node_id)
+              # XOR distance between peer_id and target info_hash
+              distance = int.from_bytes(peer_id, 'big') ^ int.from_bytes(target, 'big')
+              return distance
 
-            sorted_peers = sorted(self.connecting_peer, key=lambda peer: calculate_distance(peer, info_hash))
-            top_peers = sorted_peers[:min(8, len(sorted_peers))]
+          sorted_peers = sorted(self.connecting_peer, key=lambda peer: calculate_distance(peer, info_hash))
+          top_peers = sorted_peers[:min(8, len(sorted_peers))]
 
-            for peer in top_peers:
-              self.send_get_peers(peer[0],peer[1],info_hash)
-              self.connecting_peer.remove(peer)
+          for peer in top_peers:
+            self.send_get_peers(peer[0],peer[1],info_hash)
+            self.connecting_peer.remove(peer)
+          time.sleep(0.25)
 
-        for i in list(self.sharing_peer):
-          print(f"\033[92m Found peer {i[0]}:{i[1]}\033[0m")
-          self.send_get_peers(i[0],i[1],info_hash)
 
-        for i in list(self.sharing_peer):
-          print(f"\033[92m Sharing peer {i[0]}:{i[1]}\033[0m")
+      for i in list(self.sharing_peer):
+        print(f"\033[92m Found peer {i[0]}:{i[1]}\033[0m")
+        self.send_get_peers(i[0],i[1],info_hash)
+
+      time.sleep(5)
+      for i in list(self.sharing_peer):
+        print(f"\033[92m Sharing peer {i[0]}:{i[1]}\033[0m")
+
+      return self.sharing_peer
 
 
 
@@ -2041,13 +2097,36 @@ def main():
         print(f"node_id {node_id}")
         print(f"info_hash {info_hash}")
 
-        dht = DHT(node_id,port=6881)
-        dht.discover_peer(bencoded_value[b'info'])
-        while True:
-            time.sleep(1)
+        dht = DHT(node_id,port=6889)
+        peer_list = dht.discover_peer(bencoded_value[b'info'])
+        peer_into = {}
+        for i in peer_list:
+            peer_into[i[0]] = i[1]
+        print(f"peer_into {peer_into}")
+        socket_info = {
+            "info_hash":bencoded_value[b'info'],
+            "peer_id":bencoded_value[b'peer_id']
+        }
+        del dht
+        time.sleep(5)
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        decoded_metadata = loop.run_until_complete(meta_info_downloader(peer_into,socket_info))
+        print(f"Tracker URL: {urllib.parse.unquote(url[0])}")
+        print(f"Length: {decoded_metadata[b'length']}")
+        print(f"Info Hash: {bencoded_value[b'info'].hex()}")
+        print(f"Piece Length: {decoded_metadata[b'piece length']}")
+        bencoded_value[b'info'] = decoded_metadata
+        piece_data = loop.run_until_complete(download_whole_file_async(peer_into,bencoded_value,handshake_type=1))
+        loop.close()
+        if piece_data:
+            with open(output_file,'wb') as f:
+                for i in sorted(piece_data.keys()):
+                    print(f"piece {i}")
+                    f.write(piece_data[i])
+
     else:
         raise NotImplementedError(f"Unknown command {command}")
-
 
 if __name__ == "__main__":
     start_time = time.time()
