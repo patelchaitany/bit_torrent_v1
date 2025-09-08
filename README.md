@@ -1,34 +1,43 @@
-[![progress-banner](https://backend.codecrafters.io/progress/bittorrent/0d4f0ffe-5dd0-4979-8104-6adcae54f28c)](https://app.codecrafters.io/users/codecrafters-bot?r=2qF)
+# Simple BitTorrent Client (fast-peer)
 
-This is a starting point for Python solutions to the
-["Build Your Own BitTorrent" Challenge](https://app.codecrafters.io/courses/bittorrent/overview).
+A compact BitTorrent client focused on fast peer acquisition and reliable downloads. Designed for experimentation, research, and lightweight seeding — not a production-grade client.
 
-In this challenge, you’ll build a BitTorrent client that's capable of parsing a
-.torrent file and downloading a file from a peer. Along the way, we’ll learn
-about how torrent files are structured, HTTP trackers, BitTorrent’s Peer
-Protocol, pipelining and more.
+---
 
-**Note**: If you're viewing this repo on GitHub, head over to
-[codecrafters.io](https://codecrafters.io) to try the challenge.
+## Overview
 
-# Passing the first stage
+This project implements a simple BitTorrent client with an emphasis on:
 
-The entry point for your BitTorrent implementation is in `app/main.py`. Study
-and uncomment the relevant code, and push your changes to pass the first stage:
+* **Immediate piece requests after handshake** (no startup delay) to reduce idle time.
+* **DHT support (BEP 5)** for trackerless peer discovery.
+* **DHT port advertisement/consumption** via message type `9` (metadata/magnet support).
+* **Auto-replenish peers** through DHT lookups when connections drop.
+* **Optional magnet metadata downloader** and a minimal seeder implementation.
 
-```sh
-git commit -am "pass 1st stage" # any msg
-git push origin master
+Ideal for: testing swarm behavior, research on peer discovery strategies, and small-scale seeding.
+
+---
+
+## Features
+
+* Tracker discovery (HTTP/UDP) using standard announce requests.
+* DHT node with `get_peers` / `find_node` support (BEP 5).
+* PEX support where available (`ut_pex`).
+* Parallel block requests per piece (configurable concurrency) for higher throughput.
+* Auto-reconnect and peer replenishment from DHT when peers disconnect.
+* Optional `app/seeder.py` to seed a .torrent (requires `libtorrent`).
+
+---
+
+## Requirements
+
+* **Python 3.10+** (tested on Linux)
+* `requests` (used for HTTP trackers):
+
+```bash
+pip install requests
 ```
 
-Time to move on to the next stage!
+* Optional: `libtorrent` (only required if you want to run `app/seeder.py`)
 
-# Stage 2 & beyond
-
-Note: This section is for stages 2 and beyond.
-
-1. Ensure you have `python (3.13)` installed locally
-1. Run `./your_program.sh` to run your program, which is implemented in
-   `app/main.py`.
-1. Commit your changes and run `git push origin master` to submit your solution
-   to CodeCrafters. Test output will be streamed to your terminal.
+---
