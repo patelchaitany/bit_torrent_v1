@@ -659,8 +659,8 @@ class Peer:
                     self.have_pieces = bytearray(resp_bitfield['have_pices'])
                 if resp_bitfield['have_all'] == 1:
                     self.have_pieces = bytearray("\xff"*math.ceil(self.num_pieces/8),encoding="latin-1")
-            self.state = 2  # Changed from 1 to 2
-            self.chocke.set()  # Set unchoked state immediately
+            self.state = 1  # Changed from 1 to 2
+            self.chocke.clear()  # Set unchoked state immediately
             asyncio.create_task(self.reader_loop())
             #asyncio.run_coroutine_threadsafe(self.reader_loop(),Peer._loop)
             log(f"shake is succssfull {self.__repr__()}")
